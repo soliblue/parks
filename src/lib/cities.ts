@@ -1,7 +1,16 @@
-import type { Coordinate } from './parks'
+import type { AmenityKey, Coordinate } from './parks'
 import type { StyleSpecification } from 'maplibre-gl'
 
-export type CityId = 'berlin' | 'vienna'
+export type CityId =
+  | 'berlin'
+  | 'vienna'
+  | 'munich'
+  | 'stuttgart'
+  | 'madrid'
+  | 'barcelona'
+  | 'paris'
+  | 'copenhagen'
+  | 'cairo'
 export type CityBounds = [number, number, number, number]
 
 export interface ParkAccessMetric {
@@ -33,6 +42,7 @@ export interface CityConfig {
   licenseLabel: string
   licenseUrl: string
   dataAttribution: string
+  availableAmenities: AmenityKey[]
   parkCount: number | null
   totalAreaM2: number | null
   districtCount: number | null
@@ -41,6 +51,14 @@ export interface CityConfig {
 
 const BKG_STYLE =
   'https://sgx.geodatenzentrum.de/gdz_basemapde_vektor/styles/bm_web_gry.json'
+const OPEN_FREE_MAP_STYLE =
+  'https://tiles.openfreemap.org/styles/positron'
+const ALL_AMENITIES: AmenityKey[] = [
+  'playground',
+  'drinkingFountain',
+  'toilet',
+  'dogRun',
+]
 const VIENNA_STYLE: StyleSpecification = {
   version: 8,
   sources: {
@@ -94,6 +112,7 @@ export const DEFAULT_CITIES: readonly CityConfig[] = [
     licenseLabel: 'dl-de/zero-2.0',
     licenseUrl: 'https://www.govdata.de/dl-de/zero-2-0',
     dataAttribution: 'Datenquelle: Land Berlin',
+    availableAmenities: [...ALL_AMENITIES],
     parkCount: null,
     totalAreaM2: null,
     districtCount: null,
@@ -117,6 +136,179 @@ export const DEFAULT_CITIES: readonly CityConfig[] = [
     licenseLabel: 'CC BY 4.0',
     licenseUrl: 'https://creativecommons.org/licenses/by/4.0/',
     dataAttribution: 'Datenquelle: Stadt Wien – data.wien.gv.at',
+    availableAmenities: [...ALL_AMENITIES],
+    parkCount: null,
+    totalAreaM2: null,
+    districtCount: null,
+    access: null,
+  },
+  {
+    id: 'munich',
+    name: 'München',
+    country: 'Deutschland',
+    center: [11.5754, 48.1371],
+    bounds: [11.360777, 48.0616244, 11.7229099, 48.2481162],
+    zoom: 10.7,
+    dataPath: 'data/munich',
+    basemapStyle: BKG_STYLE,
+    mapSourceLabel: 'basemap.de',
+    mapSourceUrl: 'https://basemap.de/',
+    mapAttribution:
+      '© GeoBasis-DE / BKG 2026 · CC BY 4.0 · Darstellung verändert',
+    dataSourceLabel: 'OpenStreetMap',
+    dataSourceUrl: 'https://www.openstreetmap.org/copyright',
+    licenseLabel: 'ODbL 1.0',
+    licenseUrl: 'https://opendatacommons.org/licenses/odbl/1-0/',
+    dataAttribution: '© OpenStreetMap-Mitwirkende',
+    availableAmenities: [],
+    parkCount: null,
+    totalAreaM2: null,
+    districtCount: null,
+    access: null,
+  },
+  {
+    id: 'stuttgart',
+    name: 'Stuttgart',
+    country: 'Deutschland',
+    center: [9.18, 48.7784],
+    bounds: [9.0386007, 48.6920188, 9.3160228, 48.8663994],
+    zoom: 10.7,
+    dataPath: 'data/stuttgart',
+    basemapStyle: BKG_STYLE,
+    mapSourceLabel: 'basemap.de',
+    mapSourceUrl: 'https://basemap.de/',
+    mapAttribution:
+      '© GeoBasis-DE / BKG 2026 · CC BY 4.0 · Darstellung verändert',
+    dataSourceLabel: 'OpenStreetMap',
+    dataSourceUrl: 'https://www.openstreetmap.org/copyright',
+    licenseLabel: 'ODbL 1.0',
+    licenseUrl: 'https://opendatacommons.org/licenses/odbl/1-0/',
+    dataAttribution: '© OpenStreetMap-Mitwirkende',
+    availableAmenities: [],
+    parkCount: null,
+    totalAreaM2: null,
+    districtCount: null,
+    access: null,
+  },
+  {
+    id: 'madrid',
+    name: 'Madrid',
+    country: 'Spanien',
+    center: [-3.7038, 40.4168],
+    bounds: [-3.889, 40.322, -3.551, 40.644],
+    zoom: 10.4,
+    dataPath: 'data/madrid',
+    basemapStyle: OPEN_FREE_MAP_STYLE,
+    mapSourceLabel: 'OpenFreeMap',
+    mapSourceUrl: 'https://openfreemap.org/',
+    mapAttribution:
+      'OpenFreeMap · © OpenMapTiles · © OpenStreetMap-Mitwirkende',
+    dataSourceLabel: 'OpenStreetMap',
+    dataSourceUrl: 'https://www.openstreetmap.org/copyright',
+    licenseLabel: 'ODbL 1.0',
+    licenseUrl: 'https://opendatacommons.org/licenses/odbl/1-0/',
+    dataAttribution: '© OpenStreetMap-Mitwirkende',
+    availableAmenities: [],
+    parkCount: null,
+    totalAreaM2: null,
+    districtCount: null,
+    access: null,
+  },
+  {
+    id: 'barcelona',
+    name: 'Barcelona',
+    country: 'Spanien',
+    center: [2.1734, 41.3851],
+    bounds: [2.1018188, 41.3259342, 2.2288666, 41.466408],
+    zoom: 10.7,
+    dataPath: 'data/barcelona',
+    basemapStyle: OPEN_FREE_MAP_STYLE,
+    mapSourceLabel: 'OpenFreeMap',
+    mapSourceUrl: 'https://openfreemap.org/',
+    mapAttribution:
+      'OpenFreeMap · © OpenMapTiles · © OpenStreetMap-Mitwirkende',
+    dataSourceLabel: 'OpenStreetMap',
+    dataSourceUrl: 'https://www.openstreetmap.org/copyright',
+    licenseLabel: 'ODbL 1.0',
+    licenseUrl: 'https://opendatacommons.org/licenses/odbl/1-0/',
+    dataAttribution: '© OpenStreetMap-Mitwirkende',
+    availableAmenities: [],
+    parkCount: null,
+    totalAreaM2: null,
+    districtCount: null,
+    access: null,
+  },
+  {
+    id: 'paris',
+    name: 'Paris',
+    country: 'Frankreich',
+    center: [2.3522, 48.8566],
+    bounds: [2.2240867, 48.8166532, 2.4697629, 48.9012965],
+    zoom: 10.7,
+    dataPath: 'data/paris',
+    basemapStyle: OPEN_FREE_MAP_STYLE,
+    mapSourceLabel: 'OpenFreeMap',
+    mapSourceUrl: 'https://openfreemap.org/',
+    mapAttribution:
+      'OpenFreeMap · © OpenMapTiles · © OpenStreetMap-Mitwirkende',
+    dataSourceLabel: 'Ville de Paris',
+    dataSourceUrl:
+      'https://opendata.paris.fr/explore/dataset/espaces_verts/',
+    licenseLabel: 'ODbL 1.0',
+    licenseUrl: 'https://opendatacommons.org/licenses/odbl/1-0/',
+    dataAttribution: 'Datenquelle: Ville de Paris – espaces_verts',
+    availableAmenities: [],
+    parkCount: null,
+    totalAreaM2: null,
+    districtCount: null,
+    access: null,
+  },
+  {
+    id: 'copenhagen',
+    name: 'Kopenhagen',
+    country: 'Dänemark',
+    center: [12.5683, 55.6761],
+    bounds: [12.45304564, 55.61284311, 12.73425297, 55.73271153],
+    zoom: 10.7,
+    dataPath: 'data/copenhagen',
+    basemapStyle: OPEN_FREE_MAP_STYLE,
+    mapSourceLabel: 'OpenFreeMap',
+    mapSourceUrl: 'https://openfreemap.org/',
+    mapAttribution:
+      'OpenFreeMap · © OpenMapTiles · © OpenStreetMap-Mitwirkende',
+    dataSourceLabel: 'Københavns Kommune',
+    dataSourceUrl:
+      'https://wfs-kbhkort.kk.dk/k101/ows?service=WFS&version=2.0.0&request=GetCapabilities',
+    licenseLabel: 'Offene WFS-Nutzung',
+    licenseUrl:
+      'https://wfs-kbhkort.kk.dk/k101/ows?service=WFS&version=2.0.0&request=GetCapabilities',
+    dataAttribution:
+      'Datenquelle: Københavns Kommune – Københavnerkort',
+    availableAmenities: [],
+    parkCount: null,
+    totalAreaM2: null,
+    districtCount: null,
+    access: null,
+  },
+  {
+    id: 'cairo',
+    name: 'Kairo',
+    country: 'Ägypten',
+    center: [31.2357, 30.0444],
+    bounds: [31.214555, 29.7483062, 31.9090054, 30.3209168],
+    zoom: 9.6,
+    dataPath: 'data/cairo',
+    basemapStyle: OPEN_FREE_MAP_STYLE,
+    mapSourceLabel: 'OpenFreeMap',
+    mapSourceUrl: 'https://openfreemap.org/',
+    mapAttribution:
+      'OpenFreeMap · © OpenMapTiles · © OpenStreetMap-Mitwirkende',
+    dataSourceLabel: 'OpenStreetMap',
+    dataSourceUrl: 'https://www.openstreetmap.org/copyright',
+    licenseLabel: 'ODbL 1.0',
+    licenseUrl: 'https://opendatacommons.org/licenses/odbl/1-0/',
+    dataAttribution: '© OpenStreetMap-Mitwirkende',
+    availableAmenities: [],
     parkCount: null,
     totalAreaM2: null,
     districtCount: null,
@@ -156,6 +348,20 @@ const asBounds = (value: unknown, fallback: CityBounds): CityBounds => {
   return parsed.every((item): item is number => item !== null)
     ? [parsed[0], parsed[1], parsed[2], parsed[3]]
     : fallback
+}
+
+const asAmenityKeys = (
+  value: unknown,
+  fallback: AmenityKey[],
+): AmenityKey[] => {
+  if (!Array.isArray(value)) return fallback
+  return value.filter(
+    (item): item is AmenityKey =>
+      item === 'playground' ||
+      item === 'drinkingFountain' ||
+      item === 'toilet' ||
+      item === 'dogRun',
+  )
 }
 
 const normalizeAccessMetric = (value: unknown): ParkAccessMetric | null => {
@@ -243,6 +449,10 @@ export const normalizeCities = (
       bounds: asBounds(entry.bounds, fallback.bounds),
       zoom: asFiniteNumber(entry.zoom) ?? fallback.zoom,
       dataPath,
+      availableAmenities: asAmenityKeys(
+        entry.availableAmenities,
+        fallback.availableAmenities,
+      ),
       parkCount: asFiniteNumber(
         entry.publicGreenSpaceCount ?? entry.parkCount,
       ),

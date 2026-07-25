@@ -132,13 +132,17 @@ a {
 }
 
 .city-comparison {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  display: flex;
   gap: 8px;
+  overflow-x: auto;
+  padding: 1px 1px 6px;
+  scrollbar-width: thin;
+  scroll-snap-type: x proximity;
 }
 
 .city-card {
-  min-width: 0;
+  flex: 0 0 102px;
+  min-width: 102px;
   padding: 10px 11px;
   display: flex;
   flex-direction: column;
@@ -148,6 +152,7 @@ a {
   border-radius: var(--radius-s);
   text-align: left;
   background: var(--color-background);
+  scroll-snap-align: start;
 }
 
 .city-card:hover {
@@ -168,7 +173,7 @@ a {
 .city-card strong {
   overflow: hidden;
   max-width: 100%;
-  font: 650 22px/1 var(--font-display);
+  font: 650 20px/1 var(--font-display);
   letter-spacing: -0.025em;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -917,6 +922,8 @@ a {
   }
 
   .city-card {
+    flex-basis: 110px;
+    min-width: 110px;
     min-height: 78px;
     padding: 11px 13px;
   }

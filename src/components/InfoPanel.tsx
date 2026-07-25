@@ -6,7 +6,7 @@ import {
   Search,
   Trees,
 } from 'lucide-react'
-import type { ChangeEvent } from 'react'
+import { useEffect, useRef, type ChangeEvent } from 'react'
 import type { CityConfig, CityId } from '../lib/cities'
 import {
   formatHectares,
@@ -55,6 +55,7 @@ export function InfoPanel({
   onQueryChange,
   onParkSelect,
 }: InfoPanelProps) {
+  const cityNavigationRef = useRef<HTMLElement>(null)
   const hasSnapshot = summary.generatedAt !== null
   const areaHectares = hasSnapshot
     ? formatInteger(Math.round(summary.totalAreaM2 / 10_000))
@@ -68,6 +69,16 @@ export function InfoPanel({
     onQueryChange(event.target.value)
   }
 
+  useEffect(() => {
+    cityNavigationRef.current
+      ?.querySelector<HTMLElement>('[aria-current="page"]')
+      ?.scrollIntoView({
+        behavior: 'auto',
+        block: 'nearest',
+        inline: 'center',
+      })
+  }, [city.id])
+
   return (
     <aside
       className="information-rail"
@@ -80,7 +91,11 @@ export function InfoPanel({
         <h1>Städte vergleichen</h1>
       </header>
 
-      <nav className="city-comparison" aria-label="Städte auswählen">
+      <nav
+        className="city-comparison"
+        ref={cityNavigationRef}
+        aria-label="Städte auswählen"
+      >
         {cities.map((candidate) => {
           const selected = candidate.id === city.id
           const hectares =
@@ -102,12 +117,12 @@ export function InfoPanel({
                   ? `${new Intl.NumberFormat('de-DE', {
                       maximumFractionDigits: 1,
                     }).format(candidate.access.sharePercent)} %`
-                  : `${hectares} ha`}
+                  : hectares}
               </strong>
               <small>
                 {candidate.access
                   ? 'mit Parkzugang in 10 Min.'
-                  : 'öffentliches Grün'}
+                  : 'ha öffentliches Grün'}
               </small>
             </button>
           )
@@ -146,7 +161,8 @@ export function InfoPanel({
           <p>
             <Building2 aria-hidden="true" />
             <span>
-              {hasSnapshot ? formatInteger(summary.districtCount) : '—'} Bezirke
+              {hasSnapshot ? formatInteger(summary.districtCount) : '—'}{' '}
+              {summary.districtCount === 1 ? 'Stadtgebiet' : 'Bezirke'}
             </span>
           </p>
           <p className="freshness">
@@ -178,7 +194,9 @@ export function InfoPanel({
         />
       </div>
 
-      <AmenityFilters selected={amenities} onToggle={onAmenityToggle} />
+      {city.availableAmenities.length > 0 ? (
+        <AmenityFilters selected={amenities} onToggle={onAmenityToggle} />
+      ) : null}
 
       <div className="origin-hint">
         <LocateFixed aria-hidden="true" />
@@ -223,7 +241,7 @@ export function InfoPanel({
         </summary>
         <div>
           <p>
-            Parkflächen und Ausstattungen:{' '}
+            Parkflächen{city.availableAmenities.length > 0 ? ' und Ausstattungen' : ''}:{' '}
             <a
               href={city.dataSourceUrl}
               rel="noreferrer"
@@ -247,9 +265,10 @@ export function InfoPanel({
           </p>
           <p>
             Die 5/10/15-Minuten-Ringe ab einem gewählten Kartenpunkt sind
-            Luftlinien-Schätzungen bei 4,2 km/h. Ausstattungen zeigen in der
-            Parkfläche oder bis zu 75 m entfernt gefundene Einträge; fehlende
-            Einträge sind keine bestätigte Abwesenheit.
+            Luftlinien-Schätzungen bei 4,2 km/h.
+            {city.availableAmenities.length > 0
+              ? ' Ausstattungen zeigen in der Parkfläche oder bis zu 75 m entfernt gefundene Einträge; fehlende Einträge sind keine bestätigte Abwesenheit.'
+              : ''}
           </p>
           {city.access ? (
             <p>

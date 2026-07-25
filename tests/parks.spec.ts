@@ -179,12 +179,55 @@ test('loads Vienna directly and keeps the selected city in the URL', async ({
   )
 })
 
+test('loads every added city from the comparison rail', async ({ page }) => {
+  test.setTimeout(90_000)
+  const cities = [
+    ['munich', 'München'],
+    ['stuttgart', 'Stuttgart'],
+    ['madrid', 'Madrid'],
+    ['barcelona', 'Barcelona'],
+    ['paris', 'Paris'],
+    ['copenhagen', 'Kopenhagen'],
+    ['cairo', 'Kairo'],
+  ] as const
+  const parkFiles: string[] = []
+  page.on('request', (request) => {
+    if (/\/data\/[^/]+\/parks\.geojson/.test(request.url())) {
+      parkFiles.push(request.url())
+    }
+  })
+
+  await page.goto('/?city=munich')
+  for (const [cityId, cityName] of cities) {
+    if (cityId !== 'munich') {
+      await page.locator(`[data-city="${cityId}"]`).click()
+    }
+    await expect(
+      page.getByText(`${cityName} im Überblick`, { exact: true }),
+    ).toBeVisible()
+    await expect(page).toHaveURL(
+      new RegExp(`(?:\\?|&)city=${cityId}(?:&|$)`),
+    )
+    await expect
+      .poll(
+        () =>
+          parkFiles.filter((url) =>
+            url.includes(`/data/${cityId}/parks.geojson`),
+          ).length,
+      )
+      .toBe(1)
+  }
+
+  await expect(page.locator('.city-card')).toHaveCount(9)
+  await expect(page.locator('.amenity-fieldset')).toHaveCount(0)
+})
+
 test('switches cities without downloading both park files up front', async ({
   page,
 }) => {
   const parkFiles: string[] = []
   page.on('request', (request) => {
-    if (/\/data\/(?:berlin|vienna)\/parks\.geojson/.test(request.url())) {
+    if (/\/data\/[^/]+\/parks\.geojson/.test(request.url())) {
       parkFiles.push(request.url())
     }
   })
@@ -192,7 +235,7 @@ test('switches cities without downloading both park files up front', async ({
   await page.goto('/')
   await expect(page.getByText('Berlin im Überblick', { exact: true })).toBeVisible()
   await expect.poll(() => parkFiles.filter((url) => url.includes('/berlin/')).length).toBe(1)
-  expect(parkFiles.some((url) => url.includes('/vienna/'))).toBe(false)
+  expect(parkFiles.some((url) => !url.includes('/berlin/'))).toBe(false)
 
   await page.getByRole('button', { name: /^Wien\b/ }).click()
   await expect(page.getByText('Wien im Überblick', { exact: true })).toBeVisible()

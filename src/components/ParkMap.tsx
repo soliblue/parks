@@ -387,7 +387,13 @@ export function ParkMap({
 
     const handleLoad = () => {
       if (!active) return
-      if (cityName === 'Berlin') softenOfficialBasemap(map)
+      if (
+        cityName === 'Berlin' ||
+        cityName === 'München' ||
+        cityName === 'Stuttgart'
+      ) {
+        softenOfficialBasemap(map)
+      }
       syncMapData(
         map,
         latestDataRef.current.geojson,

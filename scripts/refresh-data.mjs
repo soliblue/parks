@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { createWriteStream } from "node:fs";
 import {
+  access,
   mkdir,
   readFile,
   rename,
@@ -7,6 +10,9 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import {
   CITY_CONFIG,
@@ -14,12 +20,13 @@ import {
   DATA_SCHEMA_VERSION,
   JOIN_THRESHOLD_METERS,
   SIMPLIFY_TOLERANCE_METERS,
-  buildWfsUrl,
+  buildSourceUrl,
 } from "./data-sources.mjs";
 import {
   boundsCouldBeWithin,
   canonicalizeGeometry,
   combinePolygonGeometries,
+  geometryAreaSquareMeters,
   geometryBounds,
   geometryCentroid,
   geometryDistanceMeters,
@@ -29,6 +36,8 @@ import {
 
 const PROJECT_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const OUTPUT_DIRECTORY = join(PROJECT_ROOT, "public", "data");
+const SOURCE_CACHE_DIRECTORY = join(PROJECT_ROOT, ".cache", "parks-sources");
+const execFileAsync = promisify(execFile);
 const OUTPUT_NAMES = {
   parks: "parks.geojson",
   index: "parks-index.json",
@@ -87,13 +96,16 @@ function sha256(value) {
 }
 
 function sourceFeatureId(source, feature) {
-  const value = feature?.properties?.[source.idProperty];
-  if (value === undefined || value === null || value === "") {
-    throw new Error(
-      `${source.id}: feature is missing canonical field ${source.idProperty}`,
-    );
+  const candidates = source.idProperties ?? [source.idProperty];
+  for (const property of candidates) {
+    const value = feature?.properties?.[property];
+    if (value !== undefined && value !== null && value !== "") {
+      return String(value).trim();
+    }
   }
-  return String(value).trim();
+  throw new Error(
+    `${source.id}: feature is missing canonical field ${candidates.join(" or ")}`,
+  );
 }
 
 function sourceFingerprint(source, features) {
@@ -237,16 +249,118 @@ async function fetchJsonWithRetries(url, label) {
       }
     }
   }
-  throw new Error(`${label}: WFS fetch failed after 3 attempts: ${lastError}`);
+  throw new Error(`${label}: source fetch failed after 3 attempts: ${lastError}`);
+}
+
+function includeSourceFeature(source, feature) {
+  if (!feature?.geometry) return false;
+  if (!source.include) return true;
+  const value = feature.properties?.[source.include.property];
+  return source.include.values.includes(value);
+}
+
+async function pathExists(path) {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function downloadPbf(city, source) {
+  await mkdir(SOURCE_CACHE_DIRECTORY, { recursive: true });
+  const pbfPath = join(SOURCE_CACHE_DIRECTORY, `${city.id}.osm.pbf`);
+  const metadataPath = `${pbfPath}.source.json`;
+  const existingMetadata = await readFile(metadataPath, "utf8")
+    .then(JSON.parse)
+    .catch(() => null);
+  let response;
+  try {
+    response = await fetch(source.downloadUrl, {
+      headers: {
+        ...(existingMetadata?.etag
+          ? { "If-None-Match": existingMetadata.etag }
+          : {}),
+        ...(existingMetadata?.lastModified
+          ? { "If-Modified-Since": existingMetadata.lastModified }
+          : {}),
+        "User-Agent": "parks.soli.blue data refresh (+https://parks.soli.blue)",
+      },
+      signal: AbortSignal.timeout(180_000),
+    });
+  } catch (error) {
+    if (await pathExists(pbfPath)) {
+      return { pbfPath, ...existingMetadata };
+    }
+    throw error;
+  }
+  if (response.status === 304 && (await pathExists(pbfPath))) {
+    return { pbfPath, ...existingMetadata };
+  }
+  if (!response.ok || !response.body) {
+    throw new Error(
+      `${city.id}/${source.id}: PBF fetch failed with HTTP ${response.status}`,
+    );
+  }
+  const temporaryPath = `${pbfPath}.tmp`;
+  await pipeline(Readable.fromWeb(response.body), createWriteStream(temporaryPath));
+  await rename(temporaryPath, pbfPath);
+  const metadata = {
+    url: source.downloadUrl,
+    etag: response.headers.get("etag"),
+    lastModified: response.headers.get("last-modified"),
+    retrievedAt: new Date().toISOString(),
+  };
+  await writeFile(metadataPath, `${JSON.stringify(metadata)}\n`, "utf8");
+  return { pbfPath, ...metadata };
+}
+
+async function extractOsmParks(city, source) {
+  const download = await downloadPbf(city, source);
+  const outputPath = join(SOURCE_CACHE_DIRECTORY, `${city.id}.parks.geojson`);
+  await execFileAsync(
+    join(PROJECT_ROOT, "scripts", "extract-osm-parks"),
+    [
+      "--pbf",
+      download.pbfPath,
+      "--boundary-relation",
+      String(source.boundaryRelation),
+      "--city-id",
+      city.id,
+      "--city-name",
+      city.name,
+      "--output",
+      outputPath,
+    ],
+    {
+      cwd: PROJECT_ROOT,
+      maxBuffer: 10_000_000,
+      timeout: 240_000,
+    },
+  );
+  return {
+    data: JSON.parse(await readFile(outputPath, "utf8")),
+    requestUrl: source.downloadUrl,
+    dataAsOf: download.lastModified ?? null,
+  };
 }
 
 async function fetchSource(city, source, previousSources) {
-  const requestUrl = buildWfsUrl(city, source);
   const retrievedAt = new Date().toISOString();
-  const data = await fetchJsonWithRetries(
-    requestUrl,
-    `${city.id}/${source.id}`,
-  );
+  const sourcePayload =
+    source.fetchKind === "osm-pbf"
+      ? await extractOsmParks(city, source)
+      : {
+          requestUrl: buildSourceUrl(city, source),
+          data: await fetchJsonWithRetries(
+            buildSourceUrl(city, source),
+            `${city.id}/${source.id}`,
+          ),
+          dataAsOf: source.dataAsOf ?? null,
+        };
+  const { requestUrl } = sourcePayload;
+  let { data } = sourcePayload;
   if (data?.type !== "FeatureCollection" || !Array.isArray(data.features)) {
     throw new Error(
       `${city.id}/${source.id}: response is not a FeatureCollection`,
@@ -260,6 +374,13 @@ async function fetchSource(city, source, previousSources) {
       `${city.id}/${source.id}: response is truncated (${data.features.length} of ${reportedCount})`,
     );
   }
+  const rawFeatureCount = data.features.length;
+  data = {
+    ...data,
+    features: data.features.filter((feature) =>
+      includeSourceFeature(source, feature),
+    ),
+  };
   validateFeatureCount(
     source,
     data.features.length,
@@ -274,6 +395,8 @@ async function fetchSource(city, source, previousSources) {
     data,
     requestUrl,
     retrievedAt,
+    dataAsOf: sourcePayload.dataAsOf,
+    rawFeatureCount,
     fingerprint: sourceFingerprint(source, data.features),
   };
 }
@@ -443,6 +566,89 @@ function normalizeViennaParks(sourceResult, districtResult) {
     .sort((left, right) => left.id.localeCompare(right.id));
 }
 
+function firstCleanProperty(properties, names) {
+  for (const name of names ?? []) {
+    const value = cleanText(properties[name]);
+    if (value) return value;
+  }
+  return null;
+}
+
+function firstFiniteProperty(properties, names) {
+  for (const name of names ?? []) {
+    const rawValue = properties[name];
+    if (rawValue === null || rawValue === undefined || rawValue === "") {
+      continue;
+    }
+    const value = Number(rawValue);
+    if (Number.isFinite(value) && value >= 0) return value;
+  }
+  return null;
+}
+
+function normalizeGenericParks(city, sourceResult) {
+  const fields = city.parkFields;
+  return sourceResult.data.features
+    .map((feature) => {
+      const properties = feature.properties;
+      const sourceId = sourceFeatureId(sourceResult.source, feature);
+      const id = `${fields.idPrefix}${sourceId}`;
+      const geometry = canonicalizeGeometry(
+        normalizeGeometry(
+          feature.geometry,
+          SIMPLIFY_TOLERANCE_METERS,
+          COORDINATE_PRECISION,
+        ),
+      );
+      const officialArea = firstFiniteProperty(
+        properties,
+        fields.areaProperties,
+      );
+      const fallbackObjectNumber =
+        cleanText(properties.osm_id) ?? sourceId;
+      const areaM2 = round(
+        officialArea ?? geometryAreaSquareMeters(geometry),
+        1,
+      );
+      return {
+        type: "Feature",
+        id,
+        geometry,
+        properties: {
+          id,
+          name:
+            firstCleanProperty(properties, fields.nameProperties) ??
+            `${fields.fallbackName} ${fallbackObjectNumber}`,
+          nameAddon: firstCleanProperty(
+            properties,
+            fields.nameAddonProperties,
+          ),
+          objectNumber: sourceId,
+          district:
+            firstCleanProperty(properties, fields.districtProperties) ??
+            fields.defaultDistrict,
+          locality: null,
+          type:
+            firstCleanProperty(properties, fields.typeProperties) ??
+            fields.defaultType,
+          areaM2,
+          areaHa: round(areaM2 / 10_000, 2),
+          designation: null,
+          dedicated: null,
+          builtYear: null,
+          renovatedYear: null,
+          planningAreaId: null,
+          planningAreaName: null,
+          centroid: geometryCentroid(geometry),
+          bounds: geometryBounds(geometry),
+          amenities: null,
+          sourceId: "parks",
+        },
+      };
+    })
+    .sort((left, right) => left.id.localeCompare(right.id));
+}
+
 function normalizeAmenitySource(sourceResult) {
   const { source } = sourceResult;
   const groups = new Map();
@@ -594,7 +800,9 @@ function buildOutputs(city, sourceResults, generatedAt) {
   const parks =
     city.id === "berlin"
       ? normalizeBerlinParks(parkResult)
-      : normalizeViennaParks(parkResult, sourceById.districts);
+      : city.id === "vienna"
+        ? normalizeViennaParks(parkResult, sourceById.districts)
+        : normalizeGenericParks(city, parkResult);
   const amenityResults = sourceResults.filter(
     (result) => result.source.role === "amenity",
   );
@@ -606,7 +814,7 @@ function buildOutputs(city, sourceResults, generatedAt) {
     title: result.source.title,
     publisher: city.publisher,
     ...(result.source.service ? { service: result.source.service } : {}),
-    layer: result.source.layer,
+    ...(result.source.layer ? { layer: result.source.layer } : {}),
     requestUrl: result.requestUrl,
     metadataUrl: result.source.metadataUrl,
     ...(result.source.schemaUrl
@@ -614,6 +822,9 @@ function buildOutputs(city, sourceResults, generatedAt) {
       : {}),
     geometryTypes: result.source.geometryTypes,
     featureCount: result.data.features.length,
+    ...(result.rawFeatureCount !== result.data.features.length
+      ? { rawFeatureCount: result.rawFeatureCount }
+      : {}),
     normalizedEntityCount: normalizedEntityCount(
       result,
       parks,
@@ -622,7 +833,7 @@ function buildOutputs(city, sourceResults, generatedAt) {
     contentFingerprint: result.fingerprint,
     responseTimestamp: result.data.timeStamp ?? null,
     retrievedAt: result.retrievedAt,
-    dataAsOf: result.source.dataAsOf ?? null,
+    dataAsOf: result.dataAsOf ?? result.source.dataAsOf ?? null,
     license: city.license,
     coverage: result.source.coverage,
     coverageNote: result.source.coverageNote,
@@ -650,7 +861,7 @@ function buildOutputs(city, sourceResults, generatedAt) {
     type: "FeatureCollection",
     schemaVersion: DATA_SCHEMA_VERSION,
     generatedAt,
-    dataAsOf: parkResult.source.dataAsOf ?? null,
+    dataAsOf: parkResult.dataAsOf ?? parkResult.source.dataAsOf ?? null,
     sourceId: "parks",
     features: parks,
   };
@@ -676,7 +887,7 @@ function buildOutputs(city, sourceResults, generatedAt) {
     city: city.name,
     country: city.country,
     generatedAt,
-    dataAsOf: parkResult.source.dataAsOf ?? null,
+    dataAsOf: parkResult.dataAsOf ?? parkResult.source.dataAsOf ?? null,
     parkCount: parks.length,
     publicGreenSpaceCount,
     catalogParkCount,
@@ -718,7 +929,9 @@ function buildOutputs(city, sourceResults, generatedAt) {
       areaCalculation:
         city.id === "berlin"
           ? "Park and district totals sum the official katasterfl field, not the simplified browser geometry."
-          : "Green-space and district totals sum the official FLAECHE field, not the simplified browser geometry.",
+          : city.id === "vienna"
+            ? "Green-space and district totals sum the official FLAECHE field, not the simplified browser geometry."
+            : "Totals use the source area field when available; otherwise geodesic area is calculated from the clipped source geometry before browser delivery.",
       ...(city.id === "vienna"
         ? {
             districtAssignment:
@@ -803,6 +1016,9 @@ function buildCitiesManifest(effectiveOutputs) {
         dataAsOf: summary.dataAsOf,
         snapshotGeneratedAt: summary.generatedAt,
       },
+      availableAmenities: city.sources
+        .filter((source) => source.role === "amenity")
+        .map((source) => source.kind),
       access: null,
     };
   });
@@ -828,8 +1044,23 @@ async function removeLegacyRootSnapshots() {
 
 async function main() {
   const effectiveOutputs = {};
+  const selectedCityIds = new Set(
+    (process.env.PARKS_REFRESH_CITIES ?? "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean),
+  );
   for (const city of CITY_CONFIG) {
     const existing = await readExistingOutputs(city);
+    if (selectedCityIds.size > 0 && !selectedCityIds.has(city.id)) {
+      if (!existing.outputs) {
+        throw new Error(
+          `${city.id}: no existing snapshot is available for a partial refresh`,
+        );
+      }
+      effectiveOutputs[city.id] = existing.outputs;
+      continue;
+    }
     const previousSources = existing.outputs?.sources ?? null;
     const sourceResults = [];
     for (const source of city.sources) {

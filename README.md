@@ -1,27 +1,29 @@
 # Parks
 
-Static explorer and city comparison for public parks and green spaces in Berlin
-and Vienna at [`parks.soli.blue`](https://parks.soli.blue). It uses official
-open data, MapLibre, basemap.de, and basemap.at—no Google Maps key, application
-server, or database.
+Static explorer and city comparison for public parks and green spaces in
+Berlin, Vienna, Munich, Stuttgart, Madrid, Barcelona, Paris, Copenhagen, and
+Cairo at [`parks.soli.blue`](https://parks.soli.blue). It uses municipal open
+data and clipped OpenStreetMap extracts with MapLibre, basemap.de, basemap.at,
+and OpenFreeMap—no Google Maps key, application server, or database.
 
 ## Architecture
 
 The production site is fully static:
 
-1. `scripts/refresh-data.mjs` fetches official Berlin and Vienna WFS sources and
-   writes normalized, deterministic snapshots under
-   `public/data/{berlin,vienna}/`.
+1. `scripts/refresh-data.mjs` fetches official Berlin, Vienna, Paris, and
+   Copenhagen sources, plus OpenStreetMap PBF extracts for Munich, Stuttgart,
+   Madrid, Barcelona, and Cairo, and writes normalized, deterministic snapshots
+   under `public/data/{city}/`.
 2. A separate offline batch combines the 2021 JRC population grid with an
-   OpenStreetMap pedestrian graph and writes the city comparison metric to
-   `public/data/access.json`.
+   OpenStreetMap pedestrian graph and writes the Berlin and Vienna access
+   comparison metric to `public/data/access.json`.
 3. `public/data/cities.json` is the compact city catalogue. The browser fetches
    the selected city's larger files only.
 4. Vite bundles the React app and copies the generated data into `dist/data/`;
    Cloudflare Pages serves both.
-5. MapLibre loads basemap.de for Berlin or basemap.at for Vienna. Search,
-   filtering, point-selected distance estimates, and geolocation stay in the
-   browser.
+5. MapLibre loads basemap.de, basemap.at, or OpenFreeMap according to the city.
+   Search, filtering, point-selected distance estimates, and geolocation stay
+   in the browser.
 
 An API or always-on VPS process is unnecessary. A backend would only be needed
 for a genuinely dynamic feature such as accounts, submissions, live routing,
@@ -49,7 +51,7 @@ Useful commands:
 | Command | Purpose |
 | --- | --- |
 | `npm run dev` | Start Vite on the local network |
-| `npm run data:refresh` | Fetch and normalize official city data |
+| `npm run data:refresh` | Fetch and normalize municipal and OpenStreetMap city data |
 | `npm run data:access` | Rebuild the offline access metric from cached inputs |
 | `npm run data:access -- --refresh` | Refresh remote routing inputs, then rebuild access |
 | `npm run data:check` | Validate generated data and provenance |
@@ -79,10 +81,23 @@ and separate
 The polygons drive the map; the point catalogue remains contextual rather than
 being mixed into the polygon count.
 
+Paris uses the Ville de Paris
+[“Espaces verts et assimilés” dataset](https://opendata.paris.fr/explore/dataset/espaces_verts/),
+limited to open promenades and the two municipal woods. Copenhagen uses
+Københavns Kommune's official
+[Parkregister WFS](https://wfs-kbhkort.kk.dk/k101/ows?service=WFS&version=2.0.0&request=GetCapabilities),
+limited to the five public green-space classes used by the explorer.
+
+Munich, Stuttgart, Madrid, Barcelona, and Cairo use OpenStreetMap
+`leisure=park` polygons extracted from PBF files and clipped to each city's OSM
+administrative boundary. Features tagged `access=no` or `access=private` are
+excluded. These community-mapped inventories can be incomplete and are not
+equivalent to the four municipal registers.
+
 Every refresh records source URLs, timestamps, record counts, coverage notes,
 and exact licensing in the selected city's `sources.json`.
 
-- Official source identifiers remain the canonical park identifiers.
+- Source identifiers remain the canonical park identifiers.
 - Source geometries are normalized to WGS84 GeoJSON.
 - Summary counts and areas are derived from the normalized snapshot.
 - Search covers the supplied park names and districts.
@@ -100,7 +115,7 @@ Generated layout:
 | File | Contents |
 | --- | --- |
 | `public/data/cities.json` | City catalogue, map settings, totals, and data paths |
-| `public/data/access.json` | Offline city-level park-access comparison |
+| `public/data/access.json` | Offline Berlin and Vienna park-access comparison |
 | `public/data/{city}/parks.geojson` | Normalized park or public-green geometry |
 | `public/data/{city}/parks-index.json` | Compact search and nearby records |
 | `public/data/{city}/summary.json` | City totals and source freshness |
@@ -108,7 +123,8 @@ Generated layout:
 
 ## Ten-minute access metric
 
-The city comparison's “within a 10-minute walk” percentage is a model estimate:
+The “within a 10-minute walk” percentage currently published for Berlin and
+Vienna is a model estimate:
 
 - **Denominator:** modeled resident population in 2021 JRC 100 m grid cells
   inside the city's administrative boundary.
@@ -121,7 +137,9 @@ The city comparison's “within a 10-minute walk” percentage is a model estima
 The metric is suitable for comparing broad access patterns, not for navigation
 or guarantees about entrances, opening hours, safety, barriers, or individual
 mobility. The 2021 population surface is a modeled grid, and OpenStreetMap and
-city inventories have uneven completeness.
+city inventories have uneven completeness. The other seven cities currently
+compare park counts and mapped area only; no access percentage is inferred for
+them.
 
 This city-level metric is distinct from the 5/10/15-minute rings shown after a
 user selects a point. Those rings remain straight-line estimates based on an
@@ -132,7 +150,12 @@ The Berlin datasets are published under
 Vienna data uses
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) with the required
 attribution: **Datenquelle: Stadt Wien – data.wien.gv.at**. The app keeps source
-and freshness attribution visible. See
+and freshness attribution visible. Paris data is published under
+[ODbL](https://opendatacommons.org/licenses/odbl/1-0/). The Copenhagen WFS
+capabilities state no fees or access constraints. OpenStreetMap-derived park
+data remains under
+[ODbL](https://www.openstreetmap.org/copyright) with contributor attribution.
+See
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for map, font, and software
 notices.
 

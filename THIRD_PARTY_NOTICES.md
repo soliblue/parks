@@ -35,17 +35,54 @@ License:
 Required attribution: **Datenquelle: Stadt Wien – data.wien.gv.at**. Source and
 per-refresh details are retained in `public/data/vienna/sources.json`.
 
+## Official Paris data
+
+Paris park snapshots come from the Ville de Paris
+[“Espaces verts et assimilés” dataset](https://opendata.paris.fr/explore/dataset/espaces_verts/).
+The explorer includes open promenades and the two municipal woods.
+
+License:
+[Open Database License 1.0 (`ODbL`)](https://opendatacommons.org/licenses/odbl/1-0/).
+Source and per-refresh details are retained in
+`public/data/paris/sources.json`.
+
+## Official Copenhagen data
+
+Copenhagen park snapshots come from Københavns Kommune's official
+[Parkregister WFS](https://wfs-kbhkort.kk.dk/k101/ows?service=WFS&version=2.0.0&request=GetCapabilities).
+The explorer includes the five mapped public green-space classes selected for
+this project. The service capabilities state `NONE` for fees and access
+constraints. Source and per-refresh details are retained in
+`public/data/copenhagen/sources.json`.
+
+## OpenStreetMap park inventories
+
+Munich, Stuttgart, Madrid, Barcelona, and Cairo use OpenStreetMap
+`leisure=park` polygons extracted from PBF files, clipped to the corresponding
+OSM administrative boundary, and filtered to exclude `access=no` and
+`access=private`. Munich, Stuttgart, Madrid, and Barcelona use
+[BBBike extracts](https://download.bbbike.org/osm/bbbike/); Cairo uses the
+[Geofabrik Egypt extract](https://download.geofabrik.de/africa/egypt.html).
+These are community-mapped observations whose completeness and access tags
+vary.
+
+`© OpenStreetMap contributors`; the OpenStreetMap database is available under
+the
+[Open Data Commons Open Database License](https://www.openstreetmap.org/copyright).
+Per-refresh source details are retained in each city's `sources.json`.
+
 ## Population grid
 
-The city-level access estimate uses the European Commission Joint Research
-Centre's
+The Berlin and Vienna city-level access estimates use the European Commission
+Joint Research Centre's
 [JRC-ESTAT Census Population 2021 100 m grid](https://data.jrc.ec.europa.eu/dataset/98336641-fd1c-4992-8c7b-c470dd5eb81e).
 It is a modeled, gridded estimate of 2021 resident population; the dataset's
 reuse notice and metadata apply.
 
 ## OpenStreetMap routing data
 
-The offline pedestrian-network calculation uses OpenStreetMap data.
+The offline Berlin and Vienna pedestrian-network calculations use
+OpenStreetMap data.
 `© OpenStreetMap contributors`; the OpenStreetMap database is available under
 the
 [Open Data Commons Open Database License](https://www.openstreetmap.org/copyright).
@@ -54,7 +91,7 @@ OpenStreetMap database extract.
 
 ## Basemaps
 
-Berlin uses
+Berlin, Munich, and Stuttgart use
 [basemap.de Web Vektor](https://basemap.de/produkte-und-dienste/web-vektor/),
 provided by the German federal and state surveying authorities under
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The application
@@ -64,8 +101,12 @@ it adapts the source style colors.
 Vienna uses the subdued
 [basemap.at](https://basemap.at/) raster tiles through its official
 WMTS-compatible endpoint. The service's own license, usage, and attribution
-terms apply. The application does not redistribute either provider's tile
-archive.
+terms apply.
+
+Madrid, Barcelona, Paris, Copenhagen, and Cairo use
+[OpenFreeMap](https://openfreemap.org/) with OpenMapTiles styling and
+OpenStreetMap data. The application displays the required provider and data
+attributions. It does not redistribute any provider's tile archive.
 
 ## Google Maps Platform
 

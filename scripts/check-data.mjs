@@ -159,7 +159,13 @@ function checkParkFeature(feature, ids, city, amenitySources) {
   const idIsValid =
     city.id === "berlin"
       ? /^\d{8}:[0-9a-f]{8}$/i.test(feature.id)
-      : /^wien:\d+$/.test(feature.id);
+      : city.id === "vienna"
+        ? /^wien:\d+$/.test(feature.id)
+        : feature.id.startsWith(
+            city.parkFields.idPrefix || `${city.id}:osm:`,
+          ) &&
+          feature.id.length >
+            (city.parkFields.idPrefix || `${city.id}:osm:`).length;
   invariant(idIsValid, `${city.id}: invalid park id ${feature.id}`);
   invariant(!ids.has(feature.id), `${city.id}: duplicate id ${feature.id}`);
   ids.add(feature.id);
@@ -175,7 +181,7 @@ function checkParkFeature(feature, ids, city, amenitySources) {
     typeof properties.district === "string" &&
       properties.district.trim().length > 0 &&
       properties.district !== "Unbekannter Bezirk",
-    `${feature.id}: missing official district assignment`,
+    `${feature.id}: missing district assignment`,
   );
   invariant(
     Number.isFinite(properties.areaM2) && properties.areaM2 >= 0,
@@ -322,16 +328,30 @@ function checkSources(document, city) {
     );
     checkDate(source.retrievedAt, `${city.id}/sources: ${config.id}`);
     const requestUrl = new URL(source.requestUrl);
-    const expectedLayer = `${city.wfs.namespace ?? ""}${config.layer}`;
-    invariant(
-      requestUrl.protocol === "https:" &&
-        requestUrl.hostname === new URL(city.wfs.baseUrl).hostname &&
-        requestUrl.searchParams.get("request") === "GetFeature" &&
-        requestUrl.searchParams.get(city.wfs.typeNameParameter) ===
-          expectedLayer &&
-        requestUrl.searchParams.get("srsName") === "EPSG:4326",
-      `${city.id}/sources: ${config.id} invalid WFS request URL`,
-    );
+    if (config.fetchKind === "osm-pbf") {
+      invariant(
+        requestUrl.protocol === "https:" &&
+          requestUrl.toString() === new URL(config.downloadUrl).toString(),
+        `${city.id}/sources: ${config.id} invalid OSM extract URL`,
+      );
+    } else if (config.fetchKind === "direct-geojson") {
+      invariant(
+        requestUrl.protocol === "https:" &&
+          requestUrl.toString() === new URL(config.downloadUrl).toString(),
+        `${city.id}/sources: ${config.id} invalid GeoJSON URL`,
+      );
+    } else {
+      const expectedLayer = `${city.wfs.namespace ?? ""}${config.layer}`;
+      invariant(
+        requestUrl.protocol === "https:" &&
+          requestUrl.hostname === new URL(city.wfs.baseUrl).hostname &&
+          requestUrl.searchParams.get("request") === "GetFeature" &&
+          requestUrl.searchParams.get(city.wfs.typeNameParameter) ===
+            expectedLayer &&
+          requestUrl.searchParams.get("srsName") === "EPSG:4326",
+        `${city.id}/sources: ${config.id} invalid WFS request URL`,
+      );
+    }
   }
   invariant(
     document.sources.length === city.sources.length,
@@ -403,7 +423,7 @@ async function checkCity(city) {
     invariant(
       summary.catalogParkCount === null &&
         summary.excludedOutsideCityCount === 0,
-      "berlin/summary: unexpected catalogue or exclusion count",
+      `${city.id}/summary: unexpected catalogue or exclusion count`,
     );
   }
 
@@ -501,6 +521,9 @@ function checkManifestEntry(entry, city, summary) {
       dataAsOf: summary.dataAsOf,
       snapshotGeneratedAt: summary.generatedAt,
     },
+    availableAmenities: city.sources
+      .filter((source) => source.role === "amenity")
+      .map((source) => source.kind),
     access: null,
   };
   invariant(
@@ -534,9 +557,15 @@ async function checkAccess(checked) {
     "access.json: JRC population source missing",
   );
 
-  for (const city of CITY_CONFIG) {
+  for (const requiredCityId of ["berlin", "vienna"]) {
+    invariant(
+      access.cities?.[requiredCityId],
+      `access.json: missing ${requiredCityId}`,
+    );
+  }
+
+  for (const city of CITY_CONFIG.filter((candidate) => access.cities?.[candidate.id])) {
     const result = access.cities?.[city.id];
-    invariant(result, `access.json: missing ${city.id}`);
     checkDate(result.generatedAt, `access.json/${city.id}/generatedAt`);
     invariant(
       result.generatedAt === access.generatedAt,
@@ -630,6 +659,7 @@ async function checkHostingConfig() {
   for (const basemapHost of [
     "https://sgx.geodatenzentrum.de",
     "https://mapsneu.wien.gv.at",
+    "https://tiles.openfreemap.org",
   ]) {
     invariant(
       headers.includes(basemapHost),

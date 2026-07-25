@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PARKS_VENV="${PARKS_ACCESS_VENV:-$PROJECT_ROOT/scripts/access/.venv}"
+REQUIREMENTS="$PROJECT_ROOT/requirements-access.txt"
+REQUIREMENTS_HASH="$(sha256sum "$REQUIREMENTS" | cut -d' ' -f1)"
+INSTALLED_HASH_FILE="$PARKS_VENV/.requirements.sha256"
+
+if [[ ! -x "$PARKS_VENV/bin/python" ]]; then
+  python3 -m venv "$PARKS_VENV"
+fi
+
+if [[ ! -f "$INSTALLED_HASH_FILE" ]] ||
+  [[ "$(tr -d '\n' < "$INSTALLED_HASH_FILE")" != "$REQUIREMENTS_HASH" ]]; then
+  "$PARKS_VENV/bin/pip" install \
+    --disable-pip-version-check \
+    --only-binary=:all: \
+    --requirement "$REQUIREMENTS"
+  printf '%s\n' "$REQUIREMENTS_HASH" > "$INSTALLED_HASH_FILE"
+fi
+
+export PYTHONHASHSEED=0
+exec "$PARKS_VENV/bin/python" "$PROJECT_ROOT/scripts/extract-osm-parks.py" "$@"

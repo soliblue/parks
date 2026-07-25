@@ -328,6 +328,35 @@ export function geometryPolygons(geometry) {
   return [];
 }
 
+function sphericalRingArea(ring) {
+  const earthRadiusMeters = 6_371_008.8;
+  const radians = Math.PI / 180;
+  let sum = 0;
+  for (let index = 0; index < ring.length - 1; index += 1) {
+    const current = ring[index];
+    const next = ring[index + 1];
+    sum +=
+      (next[0] - current[0]) *
+      radians *
+      (2 + Math.sin(current[1] * radians) + Math.sin(next[1] * radians));
+  }
+  return Math.abs((sum * earthRadiusMeters * earthRadiusMeters) / 2);
+}
+
+export function geometryAreaSquareMeters(geometry) {
+  return geometryPolygons(geometry).reduce(
+    (total, polygon) =>
+      total +
+      polygon.reduce(
+        (polygonArea, ring, ringIndex) =>
+          polygonArea +
+          (ringIndex === 0 ? 1 : -1) * sphericalRingArea(ring),
+        0,
+      ),
+    0,
+  );
+}
+
 export function combinePolygonGeometries(geometries) {
   const polygons = geometries.flatMap(geometryPolygons);
   if (polygons.length === 0) {

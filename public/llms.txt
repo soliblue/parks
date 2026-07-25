@@ -1,24 +1,26 @@
 # Parks
 
-> Comparison of official public parks and green spaces in Berlin and Vienna.
-> Static, source-backed, and free of paid map APIs.
+> Comparison of public parks and green spaces across nine cities.
+> Static, source-backed, and free of paid map APIs or Google services.
 
 Canonical URL: https://parks.soli.blue/
 Language: German
-Geographic scope: Berlin, Germany and Vienna, Austria
+Geographic scope: Berlin, Vienna, Munich, Stuttgart, Madrid, Barcelona, Paris,
+Copenhagen, and Cairo
 
 ## What the site provides
 
-- A city comparison plus maps and searchable lists for Berlin and Vienna
-- A population-weighted estimate of access within a 10-minute walk
-- District and positively matched amenity filters
+- A city comparison plus maps and searchable lists for nine cities
+- A population-weighted 10-minute access estimate for Berlin and Vienna
+- District filters, plus positively matched amenities where source coverage exists
 - Optional browser geolocation or a map-selected origin
 - Local straight-line distance and 5/10/15-minute estimates
 - Visible data source, map attribution, methodology, and freshness
 
 The rings drawn from a selected map point are straight-line estimates. The
-city-level access comparison is a separately computed pedestrian-network
-estimate. Missing amenity coverage is not evidence that an amenity is absent.
+Berlin and Vienna access values are separately computed pedestrian-network
+estimates. The other cities currently compare mapped park counts and area;
+missing access or amenity coverage is not evidence of absence.
 
 ## Public static data
 
@@ -26,15 +28,24 @@ estimate. Missing amenity coverage is not evidence that an amenity is absent.
 - https://parks.soli.blue/data/access.json — access estimate and methodology
 - https://parks.soli.blue/data/berlin/ — Berlin geometry, index, summary, sources
 - https://parks.soli.blue/data/vienna/ — Vienna geometry, index, summary, sources
+- https://parks.soli.blue/data/munich/ — Munich geometry, index, summary, sources
+- https://parks.soli.blue/data/stuttgart/ — Stuttgart geometry, index, summary, sources
+- https://parks.soli.blue/data/madrid/ — Madrid geometry, index, summary, sources
+- https://parks.soli.blue/data/barcelona/ — Barcelona geometry, index, summary, sources
+- https://parks.soli.blue/data/paris/ — Paris geometry, index, summary, sources
+- https://parks.soli.blue/data/copenhagen/ — Copenhagen geometry, index, summary, sources
+- https://parks.soli.blue/data/cairo/ — Cairo geometry, index, summary, sources
 
 These files are build artifacts, not a stability-guaranteed public API. The
-Berlin uses the official PITID; Vienna uses the official OBJECTID with a city
-prefix.
+city snapshots keep official identifiers where available and stable
+city-prefixed OpenStreetMap identifiers for extracted PBF features.
 
 ## Sources and terms
 
-Park and amenity data: Land Berlin WFS services (dl-de-zero-2.0) and Stadt Wien
-WFS services (CC BY 4.0).
-Population: EC JRC 2021 100 m census grid. Walking network: OpenStreetMap.
-Background maps: basemap.de and basemap.at.
+Municipal park data: Land Berlin, Stadt Wien, Ville de Paris, and Københavns
+Kommune. Extracted park data: OpenStreetMap PBF for Munich, Stuttgart, Madrid,
+Barcelona, and Cairo (ODbL).
+Berlin/Vienna access population: EC JRC 2021 100 m census grid. Walking network:
+OpenStreetMap.
+Background maps: basemap.de, basemap.at, and OpenFreeMap.
 Project code: MIT.

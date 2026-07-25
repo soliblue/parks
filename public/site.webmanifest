@@ -1,7 +1,7 @@
 {
   "name": "Parks",
   "short_name": "Parks",
-  "description": "Öffentliche Parks und Stadtgrün in Berlin und Wien vergleichen.",
+  "description": "Öffentliche Parks und Stadtgrün in neun Städten vergleichen – von Berlin bis Kairo.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",
