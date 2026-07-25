@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly Parkblick Berlin data refresh
+
+[Timer]
+OnCalendar=Mon 05:17
+AccuracySec=30m
+RandomizedDelaySec=20m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

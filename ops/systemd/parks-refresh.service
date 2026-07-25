@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh and deploy Parkblick Berlin data
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/soli/projects/parks
+Environment=PARKS_ROOT=/home/soli/projects/parks
+Environment=PARKS_ENV_FILE=/home/soli/projects/soli.blue/.env
+ExecStart=/home/soli/projects/parks/scripts/scheduled-refresh-deploy
+MemoryAccounting=true

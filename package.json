@@ -14,7 +14,7 @@
     "data:check": "node scripts/check-data.mjs",
     "test": "npm run data:check && playwright test",
     "test:ui": "playwright test",
-    "deploy": "npm run build && wrangler pages deploy dist --project-name=parks --branch=main --commit-dirty=true"
+    "deploy": "./scripts/deploy-production"
   },
   "dependencies": {
     "@fontsource/fraunces": "^5.2.8",

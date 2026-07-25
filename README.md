@@ -93,33 +93,24 @@ notices.
 
 ## Automated refresh
 
-`.github/workflows/refresh-data.yml` runs weekly and can also be started
-manually. It validates the new snapshot and checks `public/data/` for a real
-diff. An unchanged snapshot is a no-op. A changed snapshot must pass the full
-test suite before the workflow commits it and deploys that exact commit.
+The deployment host runs `ops/systemd/parks-refresh.timer` weekly. Its
+`scripts/scheduled-refresh-deploy` flow pulls `main`, refreshes and validates
+the snapshot, and stops immediately when the upstream data did not change. A
+real change must pass the full test suite before the script commits, pushes,
+deploys, and verifies that exact commit.
 
-The repository must allow GitHub Actions read/write access so the refresh job
-can push its data commit.
+GitHub Actions runs `.github/workflows/ci.yml` on pushes and pull requests as a
+separate verification gate. Production upload stays on the deployment host
+because the Cloudflare token is IP-restricted.
 
 ## Cloudflare Pages
 
-One-time setup:
-
-1. Create a Cloudflare Pages project named `parks` with production branch
-   `main`.
-2. Add GitHub Actions secrets `CLOUDFLARE_ACCOUNT_ID` and
-   `CLOUDFLARE_API_TOKEN`. The token needs Cloudflare Pages edit access for the
-   account.
-3. In **Workers & Pages → parks → Custom domains**, add `parks.soli.blue`.
-   Cloudflare can create the DNS record when `soli.blue` is in the same account.
-4. In GitHub, enable **Workflow permissions → Read and write permissions** for
-   the scheduled data commit.
-
-`.github/workflows/ci-deploy.yml` verifies every pull request and deploys pushes
-to `main`. Before considering a release complete, check both the immutable
-`*.parks.pages.dev` deployment URL and `https://parks.soli.blue`; zone-level
-redirects or rules can make the custom domain behave differently from the Pages
-origin.
+The Pages project is `parks`, its production branch is `main`, and the custom
+domain is `parks.soli.blue`. `npm run deploy` builds the current clean commit,
+uses the local IP-restricted Cloudflare credentials, uploads it, then verifies
+both the immutable `*.parks-4rq.pages.dev` URL and
+`https://parks.soli.blue`. Zone-level redirects or rules can make the custom
+domain behave differently from the Pages origin, so both probes are required.
 
 ## License
 

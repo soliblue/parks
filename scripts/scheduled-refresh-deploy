@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PARKS_ROOT="${PARKS_ROOT:-/home/soli/projects/parks}"
+PARKS_LOCK_FILE="${PARKS_LOCK_FILE:-/tmp/parks-refresh.lock}"
+
+exec 9>"$PARKS_LOCK_FILE"
+if ! flock -n 9; then
+  printf 'Another Parkblick refresh is already running.\n'
+  exit 0
+fi
+
+cd "$PARKS_ROOT"
+
+if [[ -n "$(git status --porcelain)" ]]; then
+  printf 'Refusing to refresh a dirty worktree.\n' >&2
+  git status --short >&2
+  exit 1
+fi
+
+git pull --ff-only origin main
+npm ci
+npm run data:refresh
+npm run data:check
+
+if git diff --quiet -- public/data; then
+  printf 'No upstream data change; skipping build, commit, and deploy.\n'
+  exit 0
+fi
+
+CI=1 npm test
+git add -- public/data
+git diff --cached --check
+git commit -m "data: refresh Berlin park snapshot [skip ci]"
+git push origin main
+
+PARKS_SKIP_BUILD=1 "$PARKS_ROOT/scripts/deploy-production"
