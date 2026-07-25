@@ -605,6 +605,7 @@ export function ParkMap({
     <section
       className="map-shell"
       data-testid="park-map"
+      data-map-ready={mapReady ? 'true' : 'false'}
       data-highlighted-5-min={highlightedParkIds[5].length}
       data-highlighted-10-min={highlightedParkIds[10].length}
       data-highlighted-15-min={highlightedParkIds[15].length}

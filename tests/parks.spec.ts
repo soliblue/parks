@@ -237,15 +237,17 @@ test('a Munich map click highlights parks after selecting a search result', asyn
 }) => {
   await page.goto('/?city=munich')
 
+  const map = parkMap(page)
+  const canvas = page.locator('.maplibregl-canvas')
+  await expect(canvas).toBeVisible()
+  await expect(map).toHaveAttribute('data-map-ready', 'true')
+
   await searchInput(page).fill('Westpark')
   const result = page.locator('.park-result').first()
   await expect(result).toContainText('Westpark')
   await result.click()
 
-  const map = parkMap(page)
-  const canvas = page.locator('.maplibregl-canvas')
-  await expect(canvas).toBeVisible()
-  await page.waitForTimeout(900)
+  await page.waitForTimeout(1_000)
   const bounds = await canvas.boundingBox()
   expect(bounds).not.toBeNull()
   await canvas.click({
