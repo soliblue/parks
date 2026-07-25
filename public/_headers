@@ -2,7 +2,7 @@
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
   Permissions-Policy: geolocation=(self)
-  Content-Security-Policy: default-src 'self'; connect-src 'self' https://sgx.geodatenzentrum.de; img-src 'self' data: blob: https://sgx.geodatenzentrum.de; style-src 'self' 'unsafe-inline'; font-src 'self' data: https://sgx.geodatenzentrum.de; worker-src 'self' blob:; script-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'self'; connect-src 'self' https://sgx.geodatenzentrum.de https://mapsneu.wien.gv.at; img-src 'self' data: blob: https://sgx.geodatenzentrum.de https://mapsneu.wien.gv.at; style-src 'self' 'unsafe-inline'; font-src 'self' data: https://sgx.geodatenzentrum.de; worker-src 'self' blob:; script-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'
 
 /data/*
   Cache-Control: public, max-age=0, must-revalidate

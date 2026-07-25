@@ -622,6 +622,22 @@ async function checkBrandRemoval() {
   );
 }
 
+async function checkHostingConfig() {
+  const headers = await readFile(
+    join(PROJECT_ROOT, "public", "_headers"),
+    "utf8",
+  );
+  for (const basemapHost of [
+    "https://sgx.geodatenzentrum.de",
+    "https://mapsneu.wien.gv.at",
+  ]) {
+    invariant(
+      headers.includes(basemapHost),
+      `public/_headers: CSP does not allow ${basemapHost}`,
+    );
+  }
+}
+
 async function main() {
   const checked = {};
   for (const city of CITY_CONFIG) {
@@ -650,6 +666,7 @@ async function main() {
     "cities.json: generatedAt must be the latest city snapshot",
   );
   await checkAccess(checked);
+  await checkHostingConfig();
   await checkBrandRemoval();
 
   const result = CITY_CONFIG.map((city) => {
