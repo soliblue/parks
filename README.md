@@ -10,12 +10,13 @@ and OpenFreeMap—no Google Maps key, application server, or database.
 
 The production site is fully static:
 
-1. `scripts/refresh-data.mjs` fetches official Berlin, Vienna, Paris, and
-   Copenhagen sources, plus OpenStreetMap PBF extracts for Munich, Stuttgart,
-   Madrid, Barcelona, and Cairo, and writes normalized, deterministic snapshots
-   under `public/data/{city}/`.
-2. A separate offline batch combines the 2021 JRC population grid with an
-   OpenStreetMap pedestrian graph and writes the Berlin and Vienna access
+1. `scripts/refresh-data.mjs` fetches official park inventories for Berlin,
+   Vienna, Paris, and Copenhagen. OpenStreetMap PBF extracts supply parks and
+   districts for Munich, Stuttgart, Madrid, Barcelona, and Cairo, plus amenity
+   observations for all seven newer cities. It writes normalized, deterministic
+   snapshots under `public/data/{city}/`.
+2. A separate offline batch combines the global GHSL 2020 population grid with
+   OpenStreetMap pedestrian graphs and writes the harmonized nine-city access
    comparison metric to `public/data/access.json`.
 3. `public/data/cities.json` is the compact city catalogue. The browser fetches
    the selected city's larger files only.
@@ -94,6 +95,13 @@ administrative boundary. Features tagged `access=no` or `access=private` are
 excluded. These community-mapped inventories can be incomplete and are not
 equivalent to the four municipal registers.
 
+The seven newer cities use community-mapped OpenStreetMap observations for
+playgrounds, toilets, drinking-water points, and dog parks. The five
+OpenStreetMap park inventories also use mapped administrative boundaries—or,
+for Cairo when those boundaries are unavailable, nearby named place labels—to
+group parks into local areas. Paris and Copenhagen retain the district fields
+from their official park inventories.
+
 Every refresh records source URLs, timestamps, record counts, coverage notes,
 and exact licensing in the selected city's `sources.json`.
 
@@ -115,7 +123,7 @@ Generated layout:
 | File | Contents |
 | --- | --- |
 | `public/data/cities.json` | City catalogue, map settings, totals, and data paths |
-| `public/data/access.json` | Offline Berlin and Vienna park-access comparison |
+| `public/data/access.json` | Offline nine-city park-access comparison |
 | `public/data/{city}/parks.geojson` | Normalized park or public-green geometry |
 | `public/data/{city}/parks-index.json` | Compact search and nearby records |
 | `public/data/{city}/summary.json` | City totals and source freshness |
@@ -123,10 +131,10 @@ Generated layout:
 
 ## Ten-minute access metric
 
-The “within a 10-minute walk” percentage currently published for Berlin and
-Vienna is a model estimate:
+The “within a 10-minute walk” percentage published for every city is a
+harmonized model estimate:
 
-- **Denominator:** modeled resident population in 2021 JRC 100 m grid cells
+- **Denominator:** modeled resident population in GHSL 2020 100 m grid cells
   inside the city's administrative boundary.
 - **Numerator:** that population whose grid location is within 805 m over an
   OpenStreetMap-derived pedestrian network from a mapped public park or green
@@ -136,10 +144,10 @@ Vienna is a model estimate:
 
 The metric is suitable for comparing broad access patterns, not for navigation
 or guarantees about entrances, opening hours, safety, barriers, or individual
-mobility. The 2021 population surface is a modeled grid, and OpenStreetMap and
-city inventories have uneven completeness. The other seven cities currently
-compare park counts and mapped area only; no access percentage is inferred for
-them.
+mobility. The GHSL population surface is a modeled grid, and OpenStreetMap and
+city inventories have uneven completeness. All nine percentages use the same
+population product, threshold, park-size rule, pedestrian-network model, and
+population-to-network snap rule.
 
 This city-level metric is distinct from the 5/10/15-minute rings shown after a
 user selects a point. Those rings remain straight-line estimates based on an

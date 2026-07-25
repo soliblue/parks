@@ -3,6 +3,8 @@ import { execFile } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import {
   access,
+  copyFile,
+  link,
   mkdir,
   readFile,
   rename,
@@ -38,6 +40,7 @@ const PROJECT_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const OUTPUT_DIRECTORY = join(PROJECT_ROOT, "public", "data");
 const SOURCE_CACHE_DIRECTORY = join(PROJECT_ROOT, ".cache", "parks-sources");
 const execFileAsync = promisify(execFile);
+const osmBundlePromises = new Map();
 const OUTPUT_NAMES = {
   parks: "parks.geojson",
   index: "parks-index.json",
@@ -272,30 +275,73 @@ async function downloadPbf(city, source) {
   await mkdir(SOURCE_CACHE_DIRECTORY, { recursive: true });
   const pbfPath = join(SOURCE_CACHE_DIRECTORY, `${city.id}.osm.pbf`);
   const metadataPath = `${pbfPath}.source.json`;
-  const existingMetadata = await readFile(metadataPath, "utf8")
+  let existingMetadata = await readFile(metadataPath, "utf8")
     .then(JSON.parse)
     .catch(() => null);
+  if (
+    existingMetadata?.url !== source.downloadUrl ||
+    !(await pathExists(pbfPath))
+  ) {
+    const sharedPath = join(
+      PROJECT_ROOT,
+      "scripts",
+      "access",
+      ".cache",
+      "inputs",
+      `${city.id}.osm.pbf`,
+    );
+    const sharedMetadata = await readFile(`${sharedPath}.meta.json`, "utf8")
+      .then(JSON.parse)
+      .catch(() => null);
+    if (
+      sharedMetadata?.url === source.downloadUrl &&
+      (await pathExists(sharedPath))
+    ) {
+      const temporaryPath = `${pbfPath}.shared`;
+      await unlink(temporaryPath).catch((error) => {
+        if (error?.code !== "ENOENT") throw error;
+      });
+      await link(sharedPath, temporaryPath).catch(async () => {
+        await copyFile(sharedPath, temporaryPath);
+      });
+      await rename(temporaryPath, pbfPath);
+      existingMetadata = {
+        url: source.downloadUrl,
+        etag: sharedMetadata.etag ?? null,
+        lastModified: sharedMetadata.lastModified ?? null,
+        retrievedAt: sharedMetadata.retrievedAt ?? new Date().toISOString(),
+      };
+      await writeFile(
+        metadataPath,
+        `${JSON.stringify(existingMetadata)}\n`,
+        "utf8",
+      );
+    }
+  }
+  const existingMatches =
+    existingMetadata?.url === source.downloadUrl &&
+    (await pathExists(pbfPath));
   let response;
   try {
     response = await fetch(source.downloadUrl, {
       headers: {
-        ...(existingMetadata?.etag
+        ...(existingMatches && existingMetadata?.etag
           ? { "If-None-Match": existingMetadata.etag }
           : {}),
-        ...(existingMetadata?.lastModified
+        ...(existingMatches && existingMetadata?.lastModified
           ? { "If-Modified-Since": existingMetadata.lastModified }
           : {}),
         "User-Agent": "parks.soli.blue data refresh (+https://parks.soli.blue)",
       },
-      signal: AbortSignal.timeout(180_000),
+      signal: AbortSignal.timeout(600_000),
     });
   } catch (error) {
-    if (await pathExists(pbfPath)) {
+    if (existingMatches) {
       return { pbfPath, ...existingMetadata };
     }
     throw error;
   }
-  if (response.status === 304 && (await pathExists(pbfPath))) {
+  if (response.status === 304 && existingMatches) {
     return { pbfPath, ...existingMetadata };
   }
   if (!response.ok || !response.body) {
@@ -316,33 +362,95 @@ async function downloadPbf(city, source) {
   return { pbfPath, ...metadata };
 }
 
-async function extractOsmParks(city, source) {
+async function extractOsmBundle(city, source) {
   const download = await downloadPbf(city, source);
-  const outputPath = join(SOURCE_CACHE_DIRECTORY, `${city.id}.parks.geojson`);
-  await execFileAsync(
-    join(PROJECT_ROOT, "scripts", "extract-osm-parks"),
-    [
-      "--pbf",
-      download.pbfPath,
+  const outputPath = join(
+    SOURCE_CACHE_DIRECTORY,
+    `${city.id}.osm-bundle.geojson`,
+  );
+  const districtLevels = source.districtAdminLevels ?? [];
+  const argumentsList = [
+    "--pbf",
+    download.pbfPath,
+    "--city-id",
+    city.id,
+    "--city-name",
+    city.name,
+    "--output",
+    outputPath,
+  ];
+  if (source.boundaryUrl) {
+    const boundaryPath = join(
+      SOURCE_CACHE_DIRECTORY,
+      `${city.id}.boundary.geojson`,
+    );
+    const boundary = await fetchJsonWithRetries(
+      source.boundaryUrl,
+      `${city.id}/boundary`,
+    );
+    await writeFile(boundaryPath, `${JSON.stringify(boundary)}\n`, "utf8");
+    argumentsList.push("--boundary-geojson", boundaryPath);
+  } else {
+    argumentsList.push(
       "--boundary-relation",
       String(source.boundaryRelation),
-      "--city-id",
-      city.id,
-      "--city-name",
-      city.name,
-      "--output",
-      outputPath,
-    ],
+    );
+  }
+  if (districtLevels.length > 0) {
+    argumentsList.push(
+      "--district-admin-levels",
+      districtLevels.join(","),
+    );
+  }
+  if (source.districtPlaceFallback) {
+    argumentsList.push("--district-place-fallback");
+  }
+  await execFileAsync(
+    join(PROJECT_ROOT, "scripts", "extract-osm-parks"),
+    argumentsList,
     {
       cwd: PROJECT_ROOT,
       maxBuffer: 10_000_000,
-      timeout: 240_000,
+      timeout: 480_000,
     },
   );
+  const data = JSON.parse(await readFile(outputPath, "utf8"));
   return {
-    data: JSON.parse(await readFile(outputPath, "utf8")),
+    data,
     requestUrl: source.downloadUrl,
-    dataAsOf: download.lastModified ?? null,
+    dataAsOf: data.dataAsOf ?? download.lastModified ?? null,
+  };
+}
+
+async function extractOsmSource(city, source) {
+  const key = [
+    city.id,
+    source.downloadUrl,
+    source.boundaryRelation ?? source.boundaryUrl,
+    ...(source.districtAdminLevels ?? []),
+  ].join(":");
+  let bundlePromise = osmBundlePromises.get(key);
+  if (!bundlePromise) {
+    bundlePromise = extractOsmBundle(city, source).catch((error) => {
+      osmBundlePromises.delete(key);
+      throw error;
+    });
+    osmBundlePromises.set(key, bundlePromise);
+  }
+  const bundle = await bundlePromise;
+  return {
+    ...bundle,
+    data: {
+      type: "FeatureCollection",
+      cityId: bundle.data.cityId,
+      cityName: bundle.data.cityName,
+      boundaryRelation: bundle.data.boundaryRelation,
+      districtAdminLevel: bundle.data.districtAdminLevel,
+      districtAssignmentKind: bundle.data.districtAssignmentKind,
+      features: bundle.data.features.filter(
+        (feature) => feature.properties?.source_kind === source.kind,
+      ),
+    },
   };
 }
 
@@ -350,7 +458,7 @@ async function fetchSource(city, source, previousSources) {
   const retrievedAt = new Date().toISOString();
   const sourcePayload =
     source.fetchKind === "osm-pbf"
-      ? await extractOsmParks(city, source)
+      ? await extractOsmSource(city, source)
       : {
           requestUrl: buildSourceUrl(city, source),
           data: await fetchJsonWithRetries(
@@ -812,10 +920,13 @@ function buildOutputs(city, sourceResults, generatedAt) {
     kind: result.source.kind,
     role: result.source.role,
     title: result.source.title,
-    publisher: city.publisher,
+    publisher: result.source.publisher ?? city.publisher,
     ...(result.source.service ? { service: result.source.service } : {}),
     ...(result.source.layer ? { layer: result.source.layer } : {}),
     requestUrl: result.requestUrl,
+    ...(result.source.boundaryUrl
+      ? { boundaryUrl: result.source.boundaryUrl }
+      : {}),
     metadataUrl: result.source.metadataUrl,
     ...(result.source.schemaUrl
       ? { schemaUrl: result.source.schemaUrl }
@@ -830,11 +941,17 @@ function buildOutputs(city, sourceResults, generatedAt) {
       parks,
       amenitiesByKind,
     ),
+    ...(Number.isInteger(result.data.districtAdminLevel)
+      ? { districtAdminLevel: result.data.districtAdminLevel }
+      : {}),
+    ...(typeof result.data.districtAssignmentKind === "string"
+      ? { districtAssignmentKind: result.data.districtAssignmentKind }
+      : {}),
     contentFingerprint: result.fingerprint,
     responseTimestamp: result.data.timeStamp ?? null,
     retrievedAt: result.retrievedAt,
     dataAsOf: result.dataAsOf ?? result.source.dataAsOf ?? null,
-    license: city.license,
+    license: result.source.license ?? city.license,
     coverage: result.source.coverage,
     coverageNote: result.source.coverageNote,
   }));
@@ -923,7 +1040,7 @@ function buildOutputs(city, sourceResults, generatedAt) {
       polygonSimplificationToleranceMeters: SIMPLIFY_TOLERANCE_METERS,
       amenityJoinThresholdMeters: JOIN_THRESHOLD_METERS,
       amenityJoin:
-        "Polygon-aware intersection or nearest-boundary distance. One official entity may match more than one adjacent green space.",
+        "Polygon-aware intersection or nearest-boundary distance. One source entity may match more than one adjacent green space.",
       duplicateHandling:
         "Features sharing a source identifier are treated as one entity; polygon fragments are combined before matching.",
       areaCalculation:
@@ -939,7 +1056,15 @@ function buildOutputs(city, sourceResults, generatedAt) {
             inventoryDistinction:
               "OEFFGRUENFLOGD polygons are the mapped public-green inventory. PARKINFOOGD is a separate park catalogue and is reported as context, not substituted for polygon features.",
           }
-        : {}),
+        : sourceById.districts
+          ? {
+              districtAssignment:
+                sourceById.districts.data.districtAssignmentKind ===
+                "nearest-place-label"
+                  ? "Each mapped park is assigned to the nearest named OpenStreetMap suburb or borough point because mapped administrative district polygons are unavailable."
+                  : `Each mapped park is assigned by representative-point containment or greatest polygon overlap against OpenStreetMap administrative boundaries at admin_level ${sourceById.districts.data.districtAdminLevel}.`,
+            }
+          : {}),
       absenceSemantics:
         "not-observed means no source entity was matched within the threshold. It is not an authoritative claim of absence; source coverage notes remain controlling.",
     },

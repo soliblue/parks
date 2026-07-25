@@ -208,6 +208,16 @@ test('loads every added city from the comparison rail', async ({ page }) => {
     await expect(page).toHaveURL(
       new RegExp(`(?:\\?|&)city=${cityId}(?:&|$)`),
     )
+    await expect(page.locator('.access-stat')).toContainText('%')
+    await expect(page.locator('.amenity-button')).toHaveCount(4)
+    for (const amenity of [
+      'Spielplatz',
+      'Trinkbrunnen',
+      'Toilette',
+      'Hundeauslauf',
+    ]) {
+      await expect(amenityFilter(page, amenity)).toBeVisible()
+    }
     await expect
       .poll(
         () =>
@@ -219,7 +229,36 @@ test('loads every added city from the comparison rail', async ({ page }) => {
   }
 
   await expect(page.locator('.city-card')).toHaveCount(9)
-  await expect(page.locator('.amenity-fieldset')).toHaveCount(0)
+  await expect(page.locator('.amenity-fieldset')).toBeVisible()
+})
+
+test('a Munich map click highlights parks after selecting a search result', async ({
+  page,
+}) => {
+  await page.goto('/?city=munich')
+
+  await searchInput(page).fill('Westpark')
+  const result = page.locator('.park-result').first()
+  await expect(result).toContainText('Westpark')
+  await result.click()
+
+  const map = parkMap(page)
+  const canvas = page.locator('.maplibregl-canvas')
+  await expect(canvas).toBeVisible()
+  await page.waitForTimeout(900)
+  const bounds = await canvas.boundingBox()
+  expect(bounds).not.toBeNull()
+  await canvas.click({
+    position: {
+      x: Math.round(bounds!.width / 2),
+      y: Math.round(bounds!.height / 2),
+    },
+  })
+
+  await expect(selectedOrigin(page)).toBeVisible()
+  await expect
+    .poll(async () => Number(await map.getAttribute('data-highlighted-parks')))
+    .toBeGreaterThan(0)
 })
 
 test('switches cities without downloading both park files up front', async ({

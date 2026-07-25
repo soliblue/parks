@@ -23,6 +23,8 @@ set +a
 : "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID is required}"
 : "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN is required}"
 
+npm run data:check
+
 if [[ "${PARKS_SKIP_BUILD:-0}" != "1" ]]; then
   npm run build
 fi
@@ -76,10 +78,14 @@ verify_json() {
                 if (!ids.has(id)) process.exit(1);
               }
             } else if (kind === "access") {
-              for (const id of ["berlin", "vienna"]) {
+              for (const id of [
+                "berlin", "vienna", "munich", "stuttgart", "madrid",
+                "barcelona", "cairo", "paris", "copenhagen",
+              ]) {
                 const city = value.cities?.[id];
                 if (
                   city?.method !== "walking-network" ||
+                  city?.populationYear !== 2020 ||
                   city?.thresholdMinutes !== 10 ||
                   !(city?.sharePercent >= 0 && city.sharePercent <= 100)
                 ) process.exit(1);

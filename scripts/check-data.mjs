@@ -308,7 +308,7 @@ function checkSources(document, city) {
     );
     invariant(
       Number.isInteger(source.normalizedEntityCount) &&
-        source.normalizedEntityCount > 0 &&
+        source.normalizedEntityCount >= config.minimumCount &&
         source.normalizedEntityCount <= source.featureCount,
       `${city.id}/sources: ${config.id} invalid normalized count`,
     );
@@ -319,8 +319,9 @@ function checkSources(document, city) {
       `${city.id}/sources: ${config.id} metadata mismatch`,
     );
     invariant(
-      source.license?.id === city.license.id,
-      `${city.id}/sources: ${config.id} license mismatch`,
+      source.publisher === (config.publisher ?? city.publisher) &&
+        source.license?.id === (config.license ?? city.license).id,
+      `${city.id}/sources: ${config.id} publisher or license mismatch`,
     );
     invariant(
       /^[0-9a-f]{64}$/.test(source.contentFingerprint),
@@ -334,6 +335,29 @@ function checkSources(document, city) {
           requestUrl.toString() === new URL(config.downloadUrl).toString(),
         `${city.id}/sources: ${config.id} invalid OSM extract URL`,
       );
+      if (config.boundaryUrl) {
+        invariant(
+          source.boundaryUrl === config.boundaryUrl &&
+            new URL(source.boundaryUrl).protocol === "https:",
+          `${city.id}/sources: ${config.id} invalid boundary URL`,
+        );
+      }
+      if (config.role === "district") {
+        if (config.districtPlaceFallback) {
+          invariant(
+            source.districtAssignmentKind === "nearest-place-label" &&
+              source.districtAdminLevel === undefined,
+            `${city.id}/sources: ${config.id} invalid place-label fallback`,
+          );
+        } else {
+          invariant(
+            source.districtAssignmentKind === "administrative-boundary" &&
+              Number.isInteger(source.districtAdminLevel) &&
+              config.districtAdminLevels.includes(source.districtAdminLevel),
+            `${city.id}/sources: ${config.id} invalid admin level`,
+          );
+        }
+      }
     } else if (config.fetchKind === "direct-geojson") {
       invariant(
         requestUrl.protocol === "https:" &&
@@ -465,6 +489,32 @@ async function checkCity(city) {
       "vienna: district metric must match 23 official boundaries",
     );
   }
+  const osmDistrictSource = city.sources.find(
+    (source) =>
+      source.role === "district" && source.fetchKind === "osm-pbf",
+  );
+  if (osmDistrictSource) {
+    const districtSource = sources.sources.find(
+      (source) => source.id === "districts",
+    );
+    const assignmentKind = districtSource?.districtAssignmentKind;
+    const expectedMethodology =
+      assignmentKind === "nearest-place-label"
+        ? "nearest named OpenStreetMap suburb or borough"
+        : "OpenStreetMap administrative boundaries";
+    invariant(
+      summary.districtCount > 1 &&
+        !districts.has(city.name) &&
+        districtSource?.featureCount >= summary.districtCount &&
+        (assignmentKind === "administrative-boundary" ||
+          (osmDistrictSource.districtPlaceFallback &&
+            assignmentKind === "nearest-place-label")) &&
+        sources.methodology?.districtAssignment?.includes(
+          expectedMethodology,
+        ),
+      `${city.id}: OSM district assignment is incomplete`,
+    );
+  }
   for (const source of amenitySources) {
     const observedCount = parks.features.filter(
       (feature) =>
@@ -473,7 +523,8 @@ async function checkCity(city) {
     ).length;
     invariant(
       summary.amenities[source.kind].parksWithObservation === observedCount &&
-        summary.amenities[source.kind].coverage === source.coverage,
+        summary.amenities[source.kind].coverage === source.coverage &&
+        summary.amenities[source.kind].entityCount >= source.minimumCount,
       `${city.id}/summary: ${source.kind} mismatch`,
     );
   }
@@ -545,26 +596,31 @@ async function checkAccess(checked) {
     "access.json: metric definition or uncertainty missing",
   );
   invariant(
-    Array.isArray(access.sources) && access.sources.length >= 7,
+    Array.isArray(access.sources) &&
+      access.sources.length >= CITY_CONFIG.length * 3 + 7,
     "access.json: source provenance missing",
   );
+  const populationSources = access.sources.filter(
+    (source) => source.role === "population",
+  );
   invariant(
-    access.sources.some(
-      (source) =>
-        source.id === "jrc-estat-population-2021-100m" &&
-        /^[0-9a-f]{64}$/.test(source.sha256),
-    ),
-    "access.json: JRC population source missing",
+    populationSources.length === 7 &&
+      populationSources.every(
+        (source) =>
+          /^ghsl-population-2020-100m-r\d+_c\d+$/.test(source.id) &&
+          /^[0-9a-f]{64}$/.test(source.sha256),
+      ),
+    "access.json: complete GHSL population-tile provenance missing",
   );
 
-  for (const requiredCityId of ["berlin", "vienna"]) {
+  for (const { id: requiredCityId } of CITY_CONFIG) {
     invariant(
       access.cities?.[requiredCityId],
       `access.json: missing ${requiredCityId}`,
     );
   }
 
-  for (const city of CITY_CONFIG.filter((candidate) => access.cities?.[candidate.id])) {
+  for (const city of CITY_CONFIG) {
     const result = access.cities?.[city.id];
     checkDate(result.generatedAt, `access.json/${city.id}/generatedAt`);
     invariant(
@@ -573,14 +629,14 @@ async function checkAccess(checked) {
     );
     invariant(
       result.method === "walking-network" &&
-        result.populationYear === 2021 &&
+        result.populationYear === 2020 &&
         result.thresholdMinutes === 10 &&
         result.thresholdMeters === 805,
       `access.json/${city.id}: method contract mismatch`,
     );
     invariant(
       Number.isInteger(result.populationTotal) &&
-        result.populationTotal > 1_000_000 &&
+        result.populationTotal > 400_000 &&
         Number.isInteger(result.populationWithinThreshold) &&
         result.populationWithinThreshold >= 0 &&
         result.populationWithinThreshold <= result.populationTotal,
@@ -596,11 +652,23 @@ async function checkAccess(checked) {
     );
     invariant(
       result.guardrails?.populationGridResolutionMeters === 100 &&
+        result.guardrails?.populationModel?.includes("GHSL") &&
+        Array.isArray(result.guardrails?.populationTileIds) &&
+        result.guardrails.populationTileIds.length > 0 &&
+        /^EPSG:326\d{2}$/.test(result.guardrails?.metricProjection ?? "") &&
         result.guardrails?.minimumEligibleParkAreaHa === 0.5 &&
         result.guardrails?.parkInputFeatureCount ===
           checked[city.id].summary.parkCount &&
         result.guardrails?.eligibleParkCount > 0 &&
         result.guardrails?.parksWithoutNetworkAccess >= 0 &&
+        result.guardrails?.populationBoundaryUncoveredM2 === 0 &&
+        Number.isInteger(result.guardrails?.populationBeyondSnapLimit) &&
+        result.guardrails.populationBeyondSnapLimit >= 0 &&
+        result.guardrails.populationBeyondSnapLimit / result.populationTotal <=
+          0.05 &&
+        result.guardrails.parksWithoutNetworkAccess /
+          result.guardrails.eligibleParkCount <=
+          0.1 &&
         !Object.hasOwn(result.guardrails, "networkSourceWasCached"),
       `access.json/${city.id}: guardrails are incomplete or operationally unstable`,
     );

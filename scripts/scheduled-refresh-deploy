@@ -21,17 +21,15 @@ fi
 git pull --ff-only origin main
 npm ci
 npm run data:refresh
+npm run data:access -- --refresh
 
 if git diff --quiet -- \
-  public/data/berlin \
-  public/data/vienna \
-  public/data/cities.json; then
+  public/data; then
   npm run data:check
   printf 'No upstream data change; skipping build, commit, and deploy.\n'
   exit 0
 fi
 
-npm run data:access
 npm run data:check
 CI=1 npm test
 git add -- public/data

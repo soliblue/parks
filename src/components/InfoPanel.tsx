@@ -141,7 +141,7 @@ export function InfoPanel({
             </strong>
             <span>der Bevölkerung mit Parkzugang in 10 Gehminuten</span>
             <small>
-              Schätzung, Zensus {city.access.populationYear} ·{' '}
+              Schätzung, GHSL {city.access.populationYear} ·{' '}
               {formatInteger(city.access.populationWithinThreshold)} von{' '}
               {formatInteger(city.access.populationTotal)} Personen
             </small>
@@ -162,7 +162,9 @@ export function InfoPanel({
             <Building2 aria-hidden="true" />
             <span>
               {hasSnapshot ? formatInteger(summary.districtCount) : '—'}{' '}
-              {summary.districtCount === 1 ? 'Stadtgebiet' : 'Bezirke'}
+              {summary.districtCount === 1
+                ? 'Stadtgebiet'
+                : (city.districtLabel ?? 'Bezirke')}
             </span>
           </p>
           <p className="freshness">
@@ -241,7 +243,11 @@ export function InfoPanel({
         </summary>
         <div>
           <p>
-            Parkflächen{city.availableAmenities.length > 0 ? ' und Ausstattungen' : ''}:{' '}
+            Parkflächen
+            {city.availableAmenities.length > 0 && !city.amenitySourceLabel
+              ? ' und Ausstattungen'
+              : ''}
+            :{' '}
             <a
               href={city.dataSourceUrl}
               rel="noreferrer"
@@ -257,7 +263,33 @@ export function InfoPanel({
             >
               {city.licenseLabel}
             </a>
-            . {city.dataAttribution}. Basiskarte:{' '}
+            . {city.dataAttribution}.{' '}
+            {city.availableAmenities.length > 0 &&
+            city.amenitySourceLabel &&
+            city.amenitySourceUrl &&
+            city.amenityLicenseLabel &&
+            city.amenityLicenseUrl ? (
+              <>
+                Ausstattungen:{' '}
+                <a
+                  href={city.amenitySourceUrl}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  {city.amenitySourceLabel}
+                </a>
+                ,{' '}
+                <a
+                  href={city.amenityLicenseUrl}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  {city.amenityLicenseLabel}
+                </a>
+                . {city.amenityAttribution}.{' '}
+              </>
+            ) : null}
+            Basiskarte:{' '}
             <a href={city.mapSourceUrl} rel="noreferrer" target="_blank">
               {city.mapSourceLabel}
             </a>
@@ -270,15 +302,16 @@ export function InfoPanel({
               ? ' Ausstattungen zeigen in der Parkfläche oder bis zu 75 m entfernt gefundene Einträge; fehlende Einträge sind keine bestätigte Abwesenheit.'
               : ''}
           </p>
+          {city.districtNote ? <p>{city.districtNote}</p> : null}
           {city.access ? (
             <p>
-              Der 10-Minuten-Wert nutzt Wohnbevölkerung des Zensus{' '}
-              {city.access.populationYear} als Nenner. Der Zähler umfasst
+              Der 10-Minuten-Wert nutzt die modellierte Wohnbevölkerung aus
+              GHSL {city.access.populationYear} als Nenner. Der Zähler umfasst
               modellierte Einwohner innerhalb von {city.access.thresholdMeters}{' '}
-              m im Fußwegenetz zu einer mindestens 0,5 ha großen, öffentlich
-              zugänglichen Grünfläche. Bevölkerungsraster:{' '}
+              m im Fußwegenetz zu einer mindestens 0,5 ha großen, nicht als
+              privat gesperrt erfassten Parkfläche. Bevölkerungsraster:{' '}
               <a
-                href="https://data.jrc.ec.europa.eu/dataset/98336641-fd1c-4992-8c7b-c470dd5eb81e"
+                href="https://data.jrc.ec.europa.eu/dataset/2ff68a52-5b5b-4a22-8f40-c41da8332cfe"
                 rel="noreferrer"
                 target="_blank"
               >
@@ -295,13 +328,7 @@ export function InfoPanel({
               . Ergebnis ist eine Modellschätzung, keine adressgenaue
               Erreichbarkeitsgarantie.
             </p>
-          ) : (
-            <p>
-              Der vergleichbare 10-Minuten-Wert wird aus Bevölkerungsraster,
-              Fußwegenetz und Parkzugängen berechnet und folgt mit dem nächsten
-              Datenlauf.
-            </p>
-          )}
+          ) : null}
           <p>
             {hasSnapshot
               ? `Geladene Parkfläche: ${formatHectares(summary.totalAreaM2)} Hektar.`

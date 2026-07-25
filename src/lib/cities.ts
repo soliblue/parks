@@ -42,6 +42,13 @@ export interface CityConfig {
   licenseLabel: string
   licenseUrl: string
   dataAttribution: string
+  amenitySourceLabel?: string
+  amenitySourceUrl?: string
+  amenityLicenseLabel?: string
+  amenityLicenseUrl?: string
+  amenityAttribution?: string
+  districtLabel?: string
+  districtNote?: string
   availableAmenities: AmenityKey[]
   parkCount: number | null
   totalAreaM2: number | null
@@ -160,7 +167,7 @@ export const DEFAULT_CITIES: readonly CityConfig[] = [
     licenseLabel: 'ODbL 1.0',
     licenseUrl: 'https://opendatacommons.org/licenses/odbl/1-0/',
     dataAttribution: '© OpenStreetMap-Mitwirkende',
-    availableAmenities: [],
+    availableAmenities: [...ALL_AMENITIES],
     parkCount: null,
     totalAreaM2: null,
     districtCount: null,
@@ -184,7 +191,7 @@ export const DEFAULT_CITIES: readonly CityConfig[] = [
     licenseLabel: 'ODbL 1.0',
     licenseUrl: 'https://opendatacommons.org/licenses/odbl/1-0/',
     dataAttribution: '© OpenStreetMap-Mitwirkende',
-    availableAmenities: [],
+    availableAmenities: [...ALL_AMENITIES],
     parkCount: null,
     totalAreaM2: null,
     districtCount: null,
@@ -208,7 +215,7 @@ export const DEFAULT_CITIES: readonly CityConfig[] = [
     licenseLabel: 'ODbL 1.0',
     licenseUrl: 'https://opendatacommons.org/licenses/odbl/1-0/',
     dataAttribution: '© OpenStreetMap-Mitwirkende',
-    availableAmenities: [],
+    availableAmenities: [...ALL_AMENITIES],
     parkCount: null,
     totalAreaM2: null,
     districtCount: null,
@@ -232,7 +239,7 @@ export const DEFAULT_CITIES: readonly CityConfig[] = [
     licenseLabel: 'ODbL 1.0',
     licenseUrl: 'https://opendatacommons.org/licenses/odbl/1-0/',
     dataAttribution: '© OpenStreetMap-Mitwirkende',
-    availableAmenities: [],
+    availableAmenities: [...ALL_AMENITIES],
     parkCount: null,
     totalAreaM2: null,
     districtCount: null,
@@ -257,7 +264,13 @@ export const DEFAULT_CITIES: readonly CityConfig[] = [
     licenseLabel: 'ODbL 1.0',
     licenseUrl: 'https://opendatacommons.org/licenses/odbl/1-0/',
     dataAttribution: 'Datenquelle: Ville de Paris – espaces_verts',
-    availableAmenities: [],
+    amenitySourceLabel: 'OpenStreetMap',
+    amenitySourceUrl: 'https://www.openstreetmap.org/copyright',
+    amenityLicenseLabel: 'ODbL 1.0',
+    amenityLicenseUrl:
+      'https://opendatacommons.org/licenses/odbl/1-0/',
+    amenityAttribution: '© OpenStreetMap-Mitwirkende',
+    availableAmenities: [...ALL_AMENITIES],
     parkCount: null,
     totalAreaM2: null,
     districtCount: null,
@@ -284,7 +297,13 @@ export const DEFAULT_CITIES: readonly CityConfig[] = [
       'https://wfs-kbhkort.kk.dk/k101/ows?service=WFS&version=2.0.0&request=GetCapabilities',
     dataAttribution:
       'Datenquelle: Københavns Kommune – Københavnerkort',
-    availableAmenities: [],
+    amenitySourceLabel: 'OpenStreetMap',
+    amenitySourceUrl: 'https://www.openstreetmap.org/copyright',
+    amenityLicenseLabel: 'ODbL 1.0',
+    amenityLicenseUrl:
+      'https://opendatacommons.org/licenses/odbl/1-0/',
+    amenityAttribution: '© OpenStreetMap-Mitwirkende',
+    availableAmenities: [...ALL_AMENITIES],
     parkCount: null,
     totalAreaM2: null,
     districtCount: null,
@@ -308,7 +327,10 @@ export const DEFAULT_CITIES: readonly CityConfig[] = [
     licenseLabel: 'ODbL 1.0',
     licenseUrl: 'https://opendatacommons.org/licenses/odbl/1-0/',
     dataAttribution: '© OpenStreetMap-Mitwirkende',
-    availableAmenities: [],
+    districtLabel: 'Stadtteil-Gruppen',
+    districtNote:
+      'Die Kairo-Gruppen sind eine OSM-Näherung über die nächstgelegenen benannten Stadtteile, keine einheitlichen amtlichen Bezirke.',
+    availableAmenities: [...ALL_AMENITIES],
     parkCount: null,
     totalAreaM2: null,
     districtCount: null,

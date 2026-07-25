@@ -15,6 +15,7 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -37,14 +38,21 @@ from rasterio.mask import mask as raster_mask
 from scipy.sparse import coo_matrix, csr_matrix, hstack, vstack
 from scipy.sparse.csgraph import dijkstra
 from scipy.spatial import cKDTree
-from shapely import contains_xy, make_valid, points, union_all
-from shapely.geometry import GeometryCollection, MultiPolygon, Polygon, mapping, shape
+from shapely import contains_xy, from_geojson, make_valid, points, union_all
+from shapely.geometry import (
+    GeometryCollection,
+    MultiPolygon,
+    Polygon,
+    box,
+    mapping,
+    shape,
+)
 from shapely.ops import transform as transform_geometry
 
 
 SCHEMA_VERSION = 1
-GRAPH_CACHE_VERSION = 1
-POPULATION_YEAR = 2021
+GRAPH_CACHE_VERSION = 2
+POPULATION_YEAR = 2020
 THRESHOLD_MINUTES = 10
 THRESHOLD_METERS = 805.0
 MINIMUM_PARK_AREA_M2 = 5_000.0
@@ -53,16 +61,16 @@ BOUNDARY_INTERSECTION_MAX_METERS = 3.0
 PERIMETER_FALLBACK_MAX_METERS = 61.0
 MAX_POPULATION_SNAP_METERS = 200.0
 BOUNDARY_SAMPLE_STEP_METERS = 30.0
-PROJECTED_CRS = "EPSG:3035"
+POPULATION_CRS = "ESRI:54009"
 USER_AGENT = "parks.soli.blue access batch/1 (+https://parks.soli.blue)"
-POPULATION_URL = (
-    "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/MAPS/"
-    "JRC-ESTAT_Census_Population_2021_100m/"
-    "JRC-ESTAT_Census_Population_2021_100m.zip"
+POPULATION_TILE_BASE_URL = (
+    "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/GHSL/"
+    "GHS_POP_GLOBE_R2023A/GHS_POP_E2020_GLOBE_R2023A_54009_100/"
+    "V1-0/tiles"
 )
 JRC_DATASET_URL = (
     "https://data.jrc.ec.europa.eu/dataset/"
-    "98336641-fd1c-4992-8c7b-c470dd5eb81e"
+    "2ff68a52-5b5b-4a22-8f40-c41da8332cfe"
 )
 
 
@@ -71,12 +79,15 @@ class CityConfig:
     id: str
     name: str
     parks_relative_path: str
-    boundary_url: str
+    boundary_url: str | None
     boundary_metadata_url: str
     boundary_title: str
     boundary_license: str
+    boundary_relation: int | None
     osm_url: str
     osm_title: str
+    projected_crs: str
+    population_tiles: tuple[str, ...]
     plausible_population_range: tuple[int, int]
 
 
@@ -97,12 +108,15 @@ CITY_CONFIGS = (
         ),
         boundary_title="ALKIS Berlin Landesgrenze",
         boundary_license="Datenlizenz Deutschland – Zero – Version 2.0",
+        boundary_relation=None,
         osm_url=(
             "https://download.geofabrik.de/europe/germany/"
             "berlin-latest.osm.pbf"
         ),
         osm_title="Geofabrik OpenStreetMap extract — Berlin",
-        plausible_population_range=(3_300_000, 4_200_000),
+        projected_crs="EPSG:32633",
+        population_tiles=("R3_C20",),
+        plausible_population_range=(3_200_000, 4_200_000),
     ),
     CityConfig(
         id="vienna",
@@ -120,9 +134,125 @@ CITY_CONFIGS = (
         ),
         boundary_title="Landesgrenze Wien",
         boundary_license="Creative Commons Namensnennung 4.0 – Stadt Wien",
+        boundary_relation=None,
         osm_url="https://download.bbbike.org/osm/bbbike/Wien/Wien.osm.pbf",
         osm_title="BBBike OpenStreetMap extract — Wien",
+        projected_crs="EPSG:32633",
+        population_tiles=("R4_C20",),
         plausible_population_range=(1_650_000, 2_250_000),
+    ),
+    CityConfig(
+        id="munich",
+        name="München",
+        parks_relative_path="public/data/munich/parks.geojson",
+        boundary_url=None,
+        boundary_metadata_url="https://www.openstreetmap.org/relation/62428",
+        boundary_title="OpenStreetMap administrative boundary — München",
+        boundary_license="Open Data Commons Open Database License 1.0",
+        boundary_relation=62428,
+        osm_url="https://download.bbbike.org/osm/bbbike/Muenchen/Muenchen.osm.pbf",
+        osm_title="BBBike OpenStreetMap extract — München",
+        projected_crs="EPSG:32632",
+        population_tiles=("R4_C19",),
+        plausible_population_range=(1_250_000, 1_850_000),
+    ),
+    CityConfig(
+        id="stuttgart",
+        name="Stuttgart",
+        parks_relative_path="public/data/stuttgart/parks.geojson",
+        boundary_url=None,
+        boundary_metadata_url="https://www.openstreetmap.org/relation/2793104",
+        boundary_title="OpenStreetMap administrative boundary — Stuttgart",
+        boundary_license="Open Data Commons Open Database License 1.0",
+        boundary_relation=2793104,
+        osm_url="https://download.bbbike.org/osm/bbbike/Stuttgart/Stuttgart.osm.pbf",
+        osm_title="BBBike OpenStreetMap extract — Stuttgart",
+        projected_crs="EPSG:32632",
+        population_tiles=("R4_C19",),
+        plausible_population_range=(500_000, 800_000),
+    ),
+    CityConfig(
+        id="madrid",
+        name="Madrid",
+        parks_relative_path="public/data/madrid/parks.geojson",
+        boundary_url=None,
+        boundary_metadata_url="https://www.openstreetmap.org/relation/5326784",
+        boundary_title="OpenStreetMap administrative boundary — Madrid",
+        boundary_license="Open Data Commons Open Database License 1.0",
+        boundary_relation=5326784,
+        osm_url="https://download.bbbike.org/osm/bbbike/Madrid/Madrid.osm.pbf",
+        osm_title="BBBike OpenStreetMap extract — Madrid",
+        projected_crs="EPSG:32630",
+        population_tiles=("R5_C18",),
+        plausible_population_range=(2_800_000, 3_900_000),
+    ),
+    CityConfig(
+        id="barcelona",
+        name="Barcelona",
+        parks_relative_path="public/data/barcelona/parks.geojson",
+        boundary_url=None,
+        boundary_metadata_url="https://www.openstreetmap.org/relation/347950",
+        boundary_title="OpenStreetMap administrative boundary — Barcelona",
+        boundary_license="Open Data Commons Open Database License 1.0",
+        boundary_relation=347950,
+        osm_url="https://download.bbbike.org/osm/bbbike/Barcelona/Barcelona.osm.pbf",
+        osm_title="BBBike OpenStreetMap extract — Barcelona",
+        projected_crs="EPSG:32631",
+        population_tiles=("R5_C19",),
+        plausible_population_range=(1_300_000, 2_000_000),
+    ),
+    CityConfig(
+        id="cairo",
+        name="Kairo",
+        parks_relative_path="public/data/cairo/parks.geojson",
+        boundary_url=None,
+        boundary_metadata_url="https://www.openstreetmap.org/relation/4103336",
+        boundary_title="OpenStreetMap administrative boundary — Cairo Governorate",
+        boundary_license="Open Data Commons Open Database License 1.0",
+        boundary_relation=4103336,
+        osm_url="https://download.geofabrik.de/africa/egypt-latest.osm.pbf",
+        osm_title="Geofabrik OpenStreetMap extract — Egypt",
+        projected_crs="EPSG:32636",
+        population_tiles=("R6_C21",),
+        plausible_population_range=(7_000_000, 13_500_000),
+    ),
+    CityConfig(
+        id="paris",
+        name="Paris",
+        parks_relative_path="public/data/paris/parks.geojson",
+        boundary_url=None,
+        boundary_metadata_url="https://www.openstreetmap.org/relation/7444",
+        boundary_title="OpenStreetMap administrative boundary — Paris",
+        boundary_license="Open Data Commons Open Database License 1.0",
+        boundary_relation=7444,
+        osm_url="https://download.bbbike.org/osm/bbbike/Paris/Paris.osm.pbf",
+        osm_title="BBBike OpenStreetMap extract — Paris",
+        projected_crs="EPSG:32631",
+        population_tiles=("R4_C19",),
+        plausible_population_range=(1_750_000, 2_500_000),
+    ),
+    CityConfig(
+        id="copenhagen",
+        name="Kopenhagen",
+        parks_relative_path="public/data/copenhagen/parks.geojson",
+        boundary_url=(
+            "https://wfs-kbhkort.kk.dk/k101/ows?service=WFS&version=1.0.0&"
+            "request=GetFeature&typeName=k101%3Akommunegraense&"
+            "outputFormat=json&SRSNAME=EPSG%3A4326&"
+            "CQL_FILTER=kommunekode%3D%270101%27"
+        ),
+        boundary_metadata_url=(
+            "https://wfs-kbhkort.kk.dk/k101/ows?service=WFS&version=2.0.0&"
+            "request=GetCapabilities"
+        ),
+        boundary_title="Official municipal boundary — Copenhagen (code 0101)",
+        boundary_license="Open data (WFS states no fees or access constraints)",
+        boundary_relation=None,
+        osm_url="https://download.geofabrik.de/europe/denmark-latest.osm.pbf",
+        osm_title="Geofabrik OpenStreetMap extract — Denmark",
+        projected_crs="EPSG:32633",
+        population_tiles=("R3_C19",),
+        plausible_population_range=(500_000, 800_000),
     ),
 )
 
@@ -300,11 +430,60 @@ def download_cached(
             "retrievedAt": record.retrieved_at,
         },
     )
-    return record, True
+    return record, not unchanged_content
+
+
+def population_tile_url(tile_id: str) -> str:
+    filename = (
+        "GHS_POP_E2020_GLOBE_R2023A_54009_100_V1_0_"
+        f"{tile_id}.zip"
+    )
+    return f"{POPULATION_TILE_BASE_URL}/{filename}"
+
+
+def prime_shared_pbf_cache(
+    project_root: Path, city: CityConfig, target: Path
+) -> None:
+    """Reuse the park-refresh PBF when it matches the routing source."""
+    existing = load_download_record(target, city.osm_url)
+    shared = project_root / ".cache/parks-sources" / f"{city.id}.osm.pbf"
+    shared_metadata = shared.with_suffix(shared.suffix + ".source.json")
+    if not shared.exists() or not shared_metadata.exists():
+        return
+    metadata = json.loads(shared_metadata.read_text(encoding="utf-8"))
+    if metadata.get("url") != city.osm_url:
+        return
+    shared_sha256 = file_sha256(shared)
+    if existing and existing.sha256 == shared_sha256:
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.shared")
+    temporary.unlink(missing_ok=True)
+    try:
+        os.link(shared, temporary)
+    except OSError:
+        shutil.copy2(shared, temporary)
+    os.replace(temporary, target)
+    atomic_write_json(
+        target.with_suffix(target.suffix + ".meta.json"),
+        {
+            "url": city.osm_url,
+            "sha256": shared_sha256,
+            "etag": metadata.get("etag"),
+            "lastModified": normalize_http_datetime(
+                metadata.get("lastModified")
+            ),
+            "retrievedAt": metadata.get("retrievedAt") or utc_now(),
+        },
+    )
 
 
 def extract_population_raster(
-    archive: DownloadRecord, target: Path, *, archive_changed: bool
+    archive: DownloadRecord,
+    target: Path,
+    *,
+    archive_changed: bool,
+    expected_crs: str,
 ) -> Path:
     if target.exists() and not archive_changed:
         return target
@@ -334,9 +513,10 @@ def extract_population_raster(
             temporary_path.unlink(missing_ok=True)
 
     with rasterio.open(target) as dataset:
-        if dataset.crs is None or dataset.crs.to_string() != PROJECTED_CRS:
+        expected = rasterio.crs.CRS.from_string(expected_crs)
+        if dataset.crs is None or dataset.crs != expected:
             raise RuntimeError(
-                f"Population raster CRS is {dataset.crs}, expected {PROJECTED_CRS}"
+                f"Population raster CRS is {dataset.crs}, expected {expected_crs}"
             )
         if tuple(round(value, 3) for value in dataset.res) != (100.0, 100.0):
             raise RuntimeError(
@@ -379,6 +559,66 @@ def load_boundary(path: Path, transformer: Transformer) -> tuple[Any, Any]:
         transform_geometry(transformer.transform, geographic)
     )
     return geographic, projected
+
+
+def extract_osm_boundary(pbf_path: Path, relation_id: int) -> Any:
+    factory = osmium.geom.GeoJSONFactory()
+    for item in (
+        osmium.FileProcessor(str(pbf_path)).with_locations().with_areas()
+    ):
+        if (
+            item.is_area()
+            and not item.from_way()
+            and item.orig_id() == relation_id
+        ):
+            geometry = polygonal_only(
+                make_valid(from_geojson(factory.create_multipolygon(item)))
+            )
+            if not geometry.is_empty:
+                return geometry
+    raise RuntimeError(
+        f"OSM boundary relation {relation_id} was not found in {pbf_path}"
+    )
+
+
+def load_or_extract_osm_boundary(
+    pbf: DownloadRecord, relation_id: int, cache_path: Path
+) -> Any:
+    metadata_path = cache_path.with_suffix(cache_path.suffix + ".meta.json")
+    if cache_path.exists() and metadata_path.exists():
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if (
+            metadata.get("pbfSha256") == pbf.sha256
+            and metadata.get("relationId") == relation_id
+        ):
+            transformer = Transformer.from_crs(
+                "EPSG:4326", "EPSG:4326", always_xy=True
+            )
+            return load_boundary(cache_path, transformer)[0]
+
+    geometry = extract_osm_boundary(pbf.path, relation_id)
+    atomic_write_json(
+        cache_path,
+        {
+            "type": "FeatureCollection",
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": mapping(geometry),
+                    "properties": {"osmRelationId": relation_id},
+                }
+            ],
+        },
+    )
+    atomic_write_json(
+        metadata_path,
+        {
+            "pbfSha256": pbf.sha256,
+            "relationId": relation_id,
+            "generatedAt": utc_now(),
+        },
+    )
+    return geometry
 
 
 def load_parks(
@@ -622,6 +862,22 @@ def load_graph_cache(path: Path) -> WalkGraph:
         )
 
 
+def prune_stale_graph_caches(active_path: Path) -> None:
+    """Keep the active graph and at most one rollback cache for this city."""
+    city_id = active_path.name.split("-", 1)[0]
+    older = sorted(
+        (
+            path
+            for path in active_path.parent.glob(f"{city_id}-*.npz")
+            if path != active_path
+        ),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for stale_path in older[1:]:
+        stale_path.unlink(missing_ok=True)
+
+
 def build_or_load_walk_graph(
     *,
     city: CityConfig,
@@ -644,7 +900,9 @@ def build_or_load_walk_graph(
     cache_path = graph_cache_directory / f"{city.id}-{key}.npz"
     if cache_path.exists():
         print(f"  loading cached pedestrian graph {cache_path.name}", flush=True)
-        return load_graph_cache(cache_path), True
+        graph = load_graph_cache(cache_path)
+        prune_stale_graph_caches(cache_path)
+        return graph, True
 
     print(f"  parsing pedestrian graph from {pbf.path.name}", flush=True)
     handler = WalkGraphHandler(bounding_box)
@@ -707,6 +965,7 @@ def build_or_load_walk_graph(
         parsed_directed_edge_count=int(edge_lengths.size),
     )
     save_graph_cache(cache_path, graph)
+    prune_stale_graph_caches(cache_path)
     del handler, edge_from, edge_to, edge_lengths, duplicate_counts
     gc.collect()
     return graph, False
@@ -932,29 +1191,51 @@ def route_to_nearest_park(
 
 
 def population_cells(
-    raster_path: Path, projected_boundary: Any
+    raster_paths: Iterable[Path],
+    population_boundary: Any,
+    population_to_city: Transformer,
 ) -> tuple[np.ndarray, np.ndarray]:
-    with rasterio.open(raster_path) as dataset:
-        clipped, transform = raster_mask(
-            dataset,
-            [mapping(projected_boundary)],
-            crop=True,
-            filled=False,
-            all_touched=False,
-            indexes=1,
+    coordinate_parts: list[np.ndarray] = []
+    value_parts: list[np.ndarray] = []
+    for raster_path in raster_paths:
+        with rasterio.open(raster_path) as dataset:
+            try:
+                clipped, transform = raster_mask(
+                    dataset,
+                    [mapping(population_boundary)],
+                    crop=True,
+                    filled=False,
+                    all_touched=False,
+                    indexes=1,
+                )
+            except ValueError as error:
+                if "do not overlap" in str(error).lower():
+                    continue
+                raise
+        clipped = np.ma.asarray(clipped)
+        valid = (~np.ma.getmaskarray(clipped)) & (np.asarray(clipped) > 0)
+        rows, columns = np.nonzero(valid)
+        if rows.size == 0:
+            continue
+        # Preserve the fractional dasymetric population assigned to each cell.
+        values = np.asarray(clipped)[rows, columns].astype(np.float64)
+        x, y = rasterio.transform.xy(transform, rows, columns, offset="center")
+        city_x, city_y = population_to_city.transform(
+            np.asarray(x, dtype=np.float64),
+            np.asarray(y, dtype=np.float64),
         )
-    clipped = np.ma.asarray(clipped)
-    valid = (~np.ma.getmaskarray(clipped)) & (np.asarray(clipped) > 0)
-    rows, columns = np.nonzero(valid)
-    # Current JRC releases are integer-valued, but preserve the raster's
-    # numeric precision here so a future fractional dasymetric release cannot
-    # be truncated once per cell.
-    values = np.asarray(clipped)[rows, columns].astype(np.float64)
-    x, y = rasterio.transform.xy(transform, rows, columns, offset="center")
-    coordinates = np.column_stack(
-        (np.asarray(x, dtype=np.float64), np.asarray(y, dtype=np.float64))
-    )
-    return coordinates, values
+        coordinate_parts.append(
+            np.column_stack(
+                (
+                    np.asarray(city_x, dtype=np.float64),
+                    np.asarray(city_y, dtype=np.float64),
+                )
+            )
+        )
+        value_parts.append(values)
+    if not coordinate_parts:
+        raise RuntimeError("No positive population cells intersect the city boundary")
+    return np.vstack(coordinate_parts), np.concatenate(value_parts)
 
 
 def aggregate_population_access(
@@ -1069,6 +1350,24 @@ def validate_city_result(city: CityConfig, result: dict[str, Any]) -> None:
             f"{city.name}: implausibly small walking graph "
             f"({guardrails['networkNodeCount']} nodes)"
         )
+    if guardrails["populationBoundaryUncoveredM2"] != 0:
+        raise RuntimeError(
+            f"{city.name}: population tiles do not cover the full boundary"
+        )
+    if guardrails["populationBeyondSnapLimit"] / total > 0.05:
+        raise RuntimeError(
+            f"{city.name}: more than 5% of residents cannot be snapped "
+            "to the pedestrian network"
+        )
+    if (
+        guardrails["parksWithoutNetworkAccess"]
+        / guardrails["eligibleParkCount"]
+        > 0.1
+    ):
+        raise RuntimeError(
+            f"{city.name}: more than 10% of eligible parks have no "
+            "pedestrian-network access"
+        )
 
 
 def parse_args() -> argparse.Namespace:
@@ -1107,54 +1406,81 @@ def main() -> int:
     input_cache = cache_directory / "inputs"
     graph_cache = cache_directory / "graphs"
     started = time.monotonic()
-    transformer = Transformer.from_crs(
-        "EPSG:4326", PROJECTED_CRS, always_xy=True
-    )
-
-    print("Preparing JRC 2021 population grid…", flush=True)
-    population_archive, population_changed = download_cached(
-        POPULATION_URL,
-        input_cache / "jrc-estat-population-2021-100m.zip",
-        refresh=args.refresh,
-    )
-    population_raster = extract_population_raster(
-        population_archive,
-        input_cache / "jrc-estat-population-2021-100m.tif",
-        archive_changed=population_changed,
-    )
 
     generated_at = utc_now()
-    sources: list[dict[str, Any]] = [
-        source_record(
-            source_id="jrc-estat-population-2021-100m",
-            title="JRC-ESTAT Census Population Grid 2021 (100 m)",
-            role="population",
-            url=POPULATION_URL,
-            metadata_url=JRC_DATASET_URL,
-            license_name="European Commission reuse notice",
-            record=population_archive,
+    sources: list[dict[str, Any]] = []
+    population_rasters: dict[str, Path] = {}
+    required_tiles = sorted(
+        {tile for city in CITY_CONFIGS for tile in city.population_tiles}
+    )
+    print(
+        f"Preparing {len(required_tiles)} GHSL 2020 population tiles…",
+        flush=True,
+    )
+    for tile_id in required_tiles:
+        url = population_tile_url(tile_id)
+        archive, changed = download_cached(
+            url,
+            input_cache / f"ghsl-population-2020-100m-{tile_id}.zip",
+            refresh=args.refresh,
+            timeout_seconds=600,
         )
-    ]
+        raster = extract_population_raster(
+            archive,
+            input_cache / f"ghsl-population-2020-100m-{tile_id}.tif",
+            archive_changed=changed,
+            expected_crs=POPULATION_CRS,
+        )
+        population_rasters[tile_id] = raster
+        sources.append(
+            source_record(
+                source_id=f"ghsl-population-2020-100m-{tile_id.lower()}",
+                title=f"GHSL GHS-POP 2020 (100 m) — tile {tile_id}",
+                role="population",
+                url=url,
+                metadata_url=JRC_DATASET_URL,
+                license_name="European Commission reuse notice",
+                record=archive,
+            )
+        )
     city_results: dict[str, Any] = {}
 
     for city in CITY_CONFIGS:
         city_started = time.monotonic()
         print(f"{city.name}:", flush=True)
         parks_path = project_root / city.parks_relative_path
-        boundary_record, _ = download_cached(
-            city.boundary_url,
-            input_cache / f"{city.id}-boundary.geojson",
-            refresh=args.refresh,
-        )
+        pbf_path = input_cache / f"{city.id}.osm.pbf"
+        prime_shared_pbf_cache(project_root, city, pbf_path)
         pbf_record, _ = download_cached(
             city.osm_url,
-            input_cache / f"{city.id}.osm.pbf",
+            pbf_path,
             refresh=args.refresh,
             timeout_seconds=600,
         )
-        geographic_boundary, projected_boundary = load_boundary(
-            boundary_record.path, transformer
+        transformer = Transformer.from_crs(
+            "EPSG:4326", city.projected_crs, always_xy=True
         )
+        boundary_record: DownloadRecord | None = None
+        if city.boundary_url:
+            boundary_record, _ = download_cached(
+                city.boundary_url,
+                input_cache / f"{city.id}-boundary.geojson",
+                refresh=args.refresh,
+            )
+            geographic_boundary, projected_boundary = load_boundary(
+                boundary_record.path, transformer
+            )
+        elif city.boundary_relation:
+            geographic_boundary = load_or_extract_osm_boundary(
+                pbf_record,
+                city.boundary_relation,
+                input_cache / f"{city.id}-boundary.geojson",
+            )
+            projected_boundary = make_valid(
+                transform_geometry(transformer.transform, geographic_boundary)
+            )
+        else:
+            raise RuntimeError(f"{city.name}: no city boundary configured")
         boundary_geometry_sha256 = geometry_sha256(geographic_boundary)
         parks = load_parks(parks_path, transformer, projected_boundary)
         print(
@@ -1178,8 +1504,37 @@ def main() -> int:
             flush=True,
         )
         node_distances = route_to_nearest_park(graph, source_weights)
+        geographic_to_population = Transformer.from_crs(
+            "EPSG:4326", POPULATION_CRS, always_xy=True
+        )
+        population_to_city = Transformer.from_crs(
+            POPULATION_CRS, city.projected_crs, always_xy=True
+        )
+        population_boundary = make_valid(
+            transform_geometry(
+                geographic_to_population.transform, geographic_boundary
+            )
+        )
+        tile_geometries = []
+        for tile in city.population_tiles:
+            with rasterio.open(population_rasters[tile]) as dataset:
+                tile_geometries.append(box(*dataset.bounds))
+        uncovered_population_boundary = population_boundary.difference(
+            union_all(tile_geometries)
+        )
+        if (
+            not uncovered_population_boundary.is_empty
+            and uncovered_population_boundary.area > 1
+        ):
+            raise RuntimeError(
+                f"{city.name}: configured GHSL tiles leave "
+                f"{uncovered_population_boundary.area:,.0f} m² of the "
+                "administrative boundary uncovered"
+            )
         cell_coordinates, cell_population = population_cells(
-            population_raster, projected_boundary
+            (population_rasters[tile] for tile in city.population_tiles),
+            population_boundary,
+            population_to_city,
         )
         (
             population_within,
@@ -1196,7 +1551,15 @@ def main() -> int:
         )
         guardrails = {
             "populationGridResolutionMeters": 100,
-            "populationModel": "2021 census counts dasymetrically allocated to 100 m cells",
+            "populationModel": (
+                "GHSL GHS-POP R2023A epoch 2020 population counts "
+                "dasymetrically allocated to 100 m cells"
+            ),
+            "populationTileIds": list(city.population_tiles),
+            "populationBoundaryUncoveredM2": int(
+                round(uncovered_population_boundary.area)
+            ),
+            "metricProjection": city.projected_crs,
             "minimumEligibleParkAreaHa": 0.5,
             "maximumPopulationNetworkSnapMeters": int(
                 MAX_POPULATION_SNAP_METERS
@@ -1219,7 +1582,8 @@ def main() -> int:
             "method": "walking-network",
             "generatedAt": generated_at,
             "note": (
-                "Modellschätzung auf Basis des Zensusrasters 2021 und des "
+                "Modellschätzung auf Basis des GHSL-Bevölkerungsrasters 2020 "
+                "und des "
                 "OpenStreetMap-Fußwegenetzes; keine individuelle "
                 "Erreichbarkeitsgarantie."
             ),
@@ -1231,7 +1595,7 @@ def main() -> int:
             [
                 source_record(
                     source_id=f"{city.id}-parks",
-                    title=f"Official public green-space inventory — {city.name}",
+                    title=f"Public green-space inventory — {city.name}",
                     role="parks",
                     url=city.parks_relative_path,
                     metadata_url=None,
@@ -1246,11 +1610,16 @@ def main() -> int:
                     source_id=f"{city.id}-boundary",
                     title=city.boundary_title,
                     role="city-boundary",
-                    url=city.boundary_url,
+                    url=city.boundary_url or city.boundary_metadata_url,
                     metadata_url=city.boundary_metadata_url,
                     license_name=city.boundary_license,
                     record=boundary_record,
                     sha256=boundary_geometry_sha256,
+                    generated_at=(
+                        None
+                        if boundary_record
+                        else pbf_record.retrieved_at
+                    ),
                     city=city.id,
                 ),
                 source_record(
@@ -1279,21 +1648,23 @@ def main() -> int:
         "methodology": {
             "metric": (
                 "Share of resident population whose 100 m population-cell "
-                "centre can reach an eligible public green-space access point "
+                "centre can reach an eligible mapped park access point "
                 "within 805 m on the pedestrian network."
             ),
             "numerator": (
-                "JRC-ESTAT 2021 resident population in cells with snapped "
+                "GHSL GHS-POP 2020 resident population in cells with snapped "
                 "pedestrian-network distance to an eligible park of at most "
                 "805 m."
             ),
             "denominator": (
-                "All positive JRC-ESTAT 2021 population cells whose centres "
-                "fall inside the official city boundary."
+                "All positive GHSL GHS-POP 2020 population cells whose centres "
+                "fall inside the configured administrative boundary."
             ),
             "parkEligibility": (
-                "Official city public-green polygons clipped to the city "
-                "boundary and measuring at least 0.5 ha in EPSG:3035."
+                "Published city green-space polygons, excluding features "
+                "explicitly marked private or inaccessible where access tags "
+                "exist, clipped to the administrative boundary and measuring "
+                "at least 0.5 ha in a local metric projection."
             ),
             "entranceModel": (
                 "Mapped pedestrian nodes inside parks and network edges "
@@ -1314,8 +1685,9 @@ def main() -> int:
                 "straight connector distance."
             ),
             "uncertainty": (
-                "Population is a 2021 dasymetric model, park inventories differ "
-                "by city, and OSM access/barrier tags can be incomplete. "
+                "Population is the harmonized GHSL 2020 dasymetric model, park "
+                "inventory coverage differs by city, and OSM access/barrier "
+                "tags can be incomplete. "
                 "Results are comparative planning estimates, not accessibility "
                 "guarantees."
             ),

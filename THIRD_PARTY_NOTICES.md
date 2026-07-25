@@ -55,7 +55,7 @@ this project. The service capabilities state `NONE` for fees and access
 constraints. Source and per-refresh details are retained in
 `public/data/copenhagen/sources.json`.
 
-## OpenStreetMap park inventories
+## OpenStreetMap park, amenity, and district data
 
 Munich, Stuttgart, Madrid, Barcelona, and Cairo use OpenStreetMap
 `leisure=park` polygons extracted from PBF files, clipped to the corresponding
@@ -63,8 +63,16 @@ OSM administrative boundary, and filtered to exclude `access=no` and
 `access=private`. Munich, Stuttgart, Madrid, and Barcelona use
 [BBBike extracts](https://download.bbbike.org/osm/bbbike/); Cairo uses the
 [Geofabrik Egypt extract](https://download.geofabrik.de/africa/egypt.html).
-These are community-mapped observations whose completeness and access tags
-vary.
+Those five cities also use OpenStreetMap administrative boundaries, with named
+place labels as Cairo's fallback, to group parks into local areas.
+
+Munich, Stuttgart, Madrid, Barcelona, Cairo, Paris, and Copenhagen use the same
+extracts for community-mapped playground, public-toilet, drinking-water, and
+dog-park observations. Paris park polygons remain from Ville de Paris and
+Copenhagen park polygons remain from Københavns Kommune. Copenhagen's
+OpenStreetMap observations come from the
+[Geofabrik Denmark extract](https://download.geofabrik.de/europe/denmark.html).
+These community-mapped observations have uneven completeness and access tags.
 
 `© OpenStreetMap contributors`; the OpenStreetMap database is available under
 the
@@ -73,16 +81,17 @@ Per-refresh source details are retained in each city's `sources.json`.
 
 ## Population grid
 
-The Berlin and Vienna city-level access estimates use the European Commission
-Joint Research Centre's
-[JRC-ESTAT Census Population 2021 100 m grid](https://data.jrc.ec.europa.eu/dataset/98336641-fd1c-4992-8c7b-c470dd5eb81e).
-It is a modeled, gridded estimate of 2021 resident population; the dataset's
-reuse notice and metadata apply.
+All nine city-level access estimates use the European Commission Joint Research
+Centre's
+[GHSL GHS-POP R2023A epoch 2020 100 m grid](https://data.jrc.ec.europa.eu/dataset/2ff68a52-5b5b-4a22-8f40-c41da8332cfe).
+It is a global modeled grid of 2020 resident population; the dataset's reuse
+notice and metadata apply. Recommended citation: Schiavina, Freire, Carioli &
+MacManus (2023), GHS-POP R2023A, European Commission JRC,
+DOI 10.2905/2FF68A52-5B5B-4A22-8F40-C41DA8332CFE.
 
 ## OpenStreetMap routing data
 
-The offline Berlin and Vienna pedestrian-network calculations use
-OpenStreetMap data.
+The offline nine-city pedestrian-network calculations use OpenStreetMap data.
 `© OpenStreetMap contributors`; the OpenStreetMap database is available under
 the
 [Open Data Commons Open Database License](https://www.openstreetmap.org/copyright).

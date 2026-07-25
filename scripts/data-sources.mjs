@@ -267,6 +267,9 @@ function osmParkSource({
   title,
   downloadUrl,
   boundaryRelation,
+  boundaryUrl,
+  districtAdminLevels,
+  districtPlaceFallback = false,
   baselineCount,
   minimumCount,
   metadataUrl = "https://www.openstreetmap.org/copyright",
@@ -277,8 +280,13 @@ function osmParkSource({
     kind: "park",
     fetchKind: "osm-pbf",
     title,
+    publisher: "OpenStreetMap contributors",
+    license: ODBL_LICENSE,
     downloadUrl,
     boundaryRelation,
+    boundaryUrl,
+    districtAdminLevels,
+    districtPlaceFallback,
     geometryTypes: ["Polygon", "MultiPolygon"],
     requiredProperties: [
       "canonical_id",
@@ -300,62 +308,272 @@ function osmParkSource({
   };
 }
 
+const OSM_AMENITY_TYPES = [
+  {
+    id: "playgrounds",
+    kind: "playground",
+    title: "playgrounds",
+    note:
+      "OpenStreetMap leisure=playground observations. Missing matches do not prove that no playground exists.",
+  },
+  {
+    id: "toilets",
+    kind: "toilet",
+    title: "public toilets",
+    note:
+      "OpenStreetMap amenity=toilets observations. Access and opening information can be incomplete.",
+  },
+  {
+    id: "drinking-fountains",
+    kind: "drinkingFountain",
+    title: "drinking-water points",
+    note:
+      "OpenStreetMap drinking-water observations. Potability and seasonal availability can change.",
+  },
+  {
+    id: "dog-runs",
+    kind: "dogRun",
+    title: "dog parks",
+    note:
+      "OpenStreetMap leisure=dog_park observations. Missing matches do not define general dog-access rules.",
+  },
+];
+
+function osmAmenitySources({
+  cityName,
+  downloadUrl,
+  boundaryRelation,
+  boundaryUrl,
+  districtAdminLevels = [],
+  districtPlaceFallback = false,
+  allowEmptyKinds = [],
+  amenityCountGuards = {},
+  metadataUrl = "https://www.openstreetmap.org/copyright",
+}) {
+  return OSM_AMENITY_TYPES.map(({ id, kind, title, note }) => {
+    const allowEmpty = allowEmptyKinds.includes(kind);
+    const countGuard = amenityCountGuards[kind] ?? {};
+    return {
+      id,
+      role: "amenity",
+      kind,
+      fetchKind: "osm-pbf",
+      title: `OpenStreetMap ${title} — ${cityName}`,
+      publisher: "OpenStreetMap contributors",
+      license: ODBL_LICENSE,
+      downloadUrl,
+      boundaryRelation,
+      boundaryUrl,
+      districtAdminLevels,
+      districtPlaceFallback,
+      geometryTypes: ["Point", "Polygon", "MultiPolygon"],
+      requiredProperties: [
+        "canonical_id",
+        "name",
+        "type",
+        "osm_type",
+        "osm_id",
+      ],
+      idProperty: "canonical_id",
+      baselineCount: countGuard.baselineCount ?? (allowEmpty ? 0 : 1),
+      minimumCount: countGuard.minimumCount ?? (allowEmpty ? 0 : 1),
+      maximumDropFraction: 0.5,
+      metadataUrl,
+      coverage: "community-mapped-observations",
+      coverageNote: note,
+    };
+  });
+}
+
+function osmDistrictSource({
+  cityName,
+  downloadUrl,
+  boundaryRelation,
+  boundaryUrl,
+  districtAdminLevels,
+  districtPlaceFallback = false,
+  districtCountGuard = { baselineCount: 2, minimumCount: 2 },
+  metadataUrl = "https://www.openstreetmap.org/copyright",
+}) {
+  return {
+    id: "districts",
+    role: "district",
+    kind: "district",
+    fetchKind: "osm-pbf",
+    title: districtPlaceFallback
+      ? `OpenStreetMap district place labels — ${cityName}`
+      : `OpenStreetMap administrative districts — ${cityName}`,
+    publisher: "OpenStreetMap contributors",
+    license: ODBL_LICENSE,
+    downloadUrl,
+    boundaryRelation,
+    boundaryUrl,
+    districtAdminLevels,
+    districtPlaceFallback,
+    geometryTypes: districtPlaceFallback
+      ? ["Point", "Polygon", "MultiPolygon"]
+      : ["Polygon", "MultiPolygon"],
+    requiredProperties: [
+      "canonical_id",
+      "name",
+      "admin_level",
+      "osm_type",
+      "osm_id",
+    ],
+    idProperty: "canonical_id",
+    baselineCount: districtCountGuard.baselineCount,
+    minimumCount: districtCountGuard.minimumCount,
+    maximumDropFraction: 0.25,
+    metadataUrl,
+    coverage: districtPlaceFallback
+      ? "community-mapped-place-labels"
+      : "community-mapped-boundaries",
+    coverageNote:
+      districtPlaceFallback
+        ? "Nearest named OpenStreetMap suburb or borough labels used because mapped administrative district polygons are unavailable."
+        : "OpenStreetMap administrative boundaries used to assign each park to a meaningful city district.",
+  };
+}
+
+const MUNICH_OSM = {
+  cityName: "München",
+  downloadUrl:
+    "https://download.bbbike.org/osm/bbbike/Muenchen/Muenchen.osm.pbf",
+  boundaryRelation: 62428,
+  districtAdminLevels: [9, 10],
+  amenityCountGuards: {
+    playground: { baselineCount: 2288, minimumCount: 900 },
+    toilet: { baselineCount: 426, minimumCount: 150 },
+    drinkingFountain: { baselineCount: 172, minimumCount: 60 },
+    dogRun: { baselineCount: 5, minimumCount: 2 },
+  },
+  districtCountGuard: { baselineCount: 25, minimumCount: 18 },
+};
 const MUNICH_SOURCES = [
   osmParkSource({
     title: "OpenStreetMap parks — München",
-    downloadUrl:
-      "https://download.bbbike.org/osm/bbbike/Muenchen/Muenchen.osm.pbf",
-    boundaryRelation: 62428,
+    ...MUNICH_OSM,
     baselineCount: 932,
     minimumCount: 600,
   }),
+  ...osmAmenitySources(MUNICH_OSM),
+  osmDistrictSource(MUNICH_OSM),
 ];
 
+const STUTTGART_OSM = {
+  cityName: "Stuttgart",
+  downloadUrl:
+    "https://download.bbbike.org/osm/bbbike/Stuttgart/Stuttgart.osm.pbf",
+  boundaryRelation: 2793104,
+  districtAdminLevels: [9, 10],
+  amenityCountGuards: {
+    playground: { baselineCount: 764, minimumCount: 300 },
+    toilet: { baselineCount: 175, minimumCount: 60 },
+    drinkingFountain: { baselineCount: 127, minimumCount: 40 },
+    dogRun: { baselineCount: 9, minimumCount: 3 },
+  },
+  districtCountGuard: { baselineCount: 23, minimumCount: 17 },
+};
 const STUTTGART_SOURCES = [
   osmParkSource({
     title: "OpenStreetMap parks — Stuttgart",
-    downloadUrl:
-      "https://download.bbbike.org/osm/bbbike/Stuttgart/Stuttgart.osm.pbf",
-    boundaryRelation: 2793104,
+    ...STUTTGART_OSM,
     baselineCount: 269,
     minimumCount: 180,
   }),
+  ...osmAmenitySources(STUTTGART_OSM),
+  osmDistrictSource(STUTTGART_OSM),
 ];
 
+const MADRID_OSM = {
+  cityName: "Madrid",
+  downloadUrl:
+    "https://download.bbbike.org/osm/bbbike/Madrid/Madrid.osm.pbf",
+  boundaryRelation: 5326784,
+  districtAdminLevels: [9, 10],
+  amenityCountGuards: {
+    playground: { baselineCount: 1960, minimumCount: 750 },
+    toilet: { baselineCount: 303, minimumCount: 100 },
+    drinkingFountain: { baselineCount: 2055, minimumCount: 750 },
+    dogRun: { baselineCount: 153, minimumCount: 50 },
+  },
+  districtCountGuard: { baselineCount: 21, minimumCount: 15 },
+};
 const MADRID_SOURCES = [
   osmParkSource({
     title: "OpenStreetMap parks — Madrid",
-    downloadUrl:
-      "https://download.bbbike.org/osm/bbbike/Madrid/Madrid.osm.pbf",
-    boundaryRelation: 5326784,
+    ...MADRID_OSM,
     baselineCount: 2114,
     minimumCount: 1300,
   }),
+  ...osmAmenitySources(MADRID_OSM),
+  osmDistrictSource(MADRID_OSM),
 ];
 
+const BARCELONA_OSM = {
+  cityName: "Barcelona",
+  downloadUrl:
+    "https://download.bbbike.org/osm/bbbike/Barcelona/Barcelona.osm.pbf",
+  boundaryRelation: 347950,
+  districtAdminLevels: [9, 10],
+  amenityCountGuards: {
+    playground: { baselineCount: 835, minimumCount: 300 },
+    toilet: { baselineCount: 290, minimumCount: 100 },
+    drinkingFountain: { baselineCount: 1838, minimumCount: 650 },
+    dogRun: { baselineCount: 102, minimumCount: 30 },
+  },
+  districtCountGuard: { baselineCount: 10, minimumCount: 7 },
+};
 const BARCELONA_SOURCES = [
   osmParkSource({
     title: "OpenStreetMap parks — Barcelona",
-    downloadUrl:
-      "https://download.bbbike.org/osm/bbbike/Barcelona/Barcelona.osm.pbf",
-    boundaryRelation: 347950,
+    ...BARCELONA_OSM,
     baselineCount: 615,
     minimumCount: 375,
   }),
+  ...osmAmenitySources(BARCELONA_OSM),
+  osmDistrictSource(BARCELONA_OSM),
 ];
 
+const CAIRO_OSM = {
+  cityName: "Cairo",
+  downloadUrl: "https://download.geofabrik.de/africa/egypt-latest.osm.pbf",
+  boundaryRelation: 4103336,
+  districtAdminLevels: [7, 8, 9, 6],
+  districtPlaceFallback: true,
+  allowEmptyKinds: ["dogRun"],
+  amenityCountGuards: {
+    playground: { baselineCount: 48, minimumCount: 15 },
+    toilet: { baselineCount: 44, minimumCount: 15 },
+    drinkingFountain: { baselineCount: 77, minimumCount: 25 },
+    dogRun: { baselineCount: 0, minimumCount: 0 },
+  },
+  districtCountGuard: { baselineCount: 40, minimumCount: 30 },
+  metadataUrl: "https://download.geofabrik.de/africa/egypt.html",
+};
 const CAIRO_SOURCES = [
   osmParkSource({
     title: "OpenStreetMap parks — Cairo",
-    downloadUrl:
-      "https://download.geofabrik.de/africa/egypt-latest.osm.pbf",
-    boundaryRelation: 4103336,
+    ...CAIRO_OSM,
     baselineCount: 395,
     minimumCount: 250,
-    metadataUrl: "https://download.geofabrik.de/africa/egypt.html",
   }),
+  ...osmAmenitySources(CAIRO_OSM),
+  osmDistrictSource(CAIRO_OSM),
 ];
 
+const PARIS_OSM = {
+  cityName: "Paris",
+  downloadUrl:
+    "https://download.bbbike.org/osm/bbbike/Paris/Paris.osm.pbf",
+  boundaryRelation: 7444,
+  amenityCountGuards: {
+    playground: { baselineCount: 606, minimumCount: 200 },
+    toilet: { baselineCount: 909, minimumCount: 300 },
+    drinkingFountain: { baselineCount: 1079, minimumCount: 350 },
+    dogRun: { baselineCount: 27, minimumCount: 8 },
+  },
+};
 const PARIS_SOURCES = [
   {
     id: "parks",
@@ -391,8 +609,23 @@ const PARIS_SOURCES = [
     coverageNote:
       "Official Ville de Paris polygons limited to open promenades and the two municipal woods.",
   },
+  ...osmAmenitySources(PARIS_OSM),
 ];
 
+const COPENHAGEN_OSM = {
+  cityName: "København",
+  downloadUrl:
+    "https://download.geofabrik.de/europe/denmark-latest.osm.pbf",
+  boundaryUrl:
+    "https://wfs-kbhkort.kk.dk/k101/ows?service=WFS&version=1.0.0&request=GetFeature&typeName=k101%3Akommunegraense&outputFormat=json&SRSNAME=EPSG%3A4326&CQL_FILTER=kommunekode%3D%270101%27",
+  amenityCountGuards: {
+    playground: { baselineCount: 524, minimumCount: 180 },
+    toilet: { baselineCount: 243, minimumCount: 80 },
+    drinkingFountain: { baselineCount: 95, minimumCount: 30 },
+    dogRun: { baselineCount: 51, minimumCount: 15 },
+  },
+  metadataUrl: "https://download.geofabrik.de/europe/denmark.html",
+};
 const COPENHAGEN_SOURCES = [
   {
     id: "parks",
@@ -431,6 +664,7 @@ const COPENHAGEN_SOURCES = [
     coverageNote:
       "Official Copenhagen park register, limited to the five mapped public green-space classes used by this explorer.",
   },
+  ...osmAmenitySources(COPENHAGEN_OSM),
 ];
 
 export const CITY_CONFIG = [
