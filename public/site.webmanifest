@@ -1,0 +1,17 @@
+{
+  "name": "Parkblick",
+  "short_name": "Parkblick",
+  "description": "Berlins öffentliche Parks und Grünanlagen in deiner Nähe.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

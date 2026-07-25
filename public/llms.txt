@@ -1,0 +1,35 @@
+# Parkblick
+
+> Berlin-first explorer for official public parks and green spaces. Static,
+> source-backed, and free of paid Google services.
+
+Canonical URL: https://parks.soli.blue/
+Language: German
+Geographic scope: Berlin, Germany
+
+## What the site provides
+
+- A map and searchable list of Berlin public parks and green spaces
+- District and positively matched amenity filters
+- Optional browser geolocation or a map-selected origin
+- Local straight-line distance and 5/10/15-minute estimates
+- Visible data source, map attribution, methodology, and freshness
+
+The time bands are estimates, not routed walking isochrones. Missing amenity
+coverage is not evidence that an amenity is absent.
+
+## Public static data
+
+- https://parks.soli.blue/data/parks.geojson — normalized park geometry
+- https://parks.soli.blue/data/parks-index.json — search and nearby index
+- https://parks.soli.blue/data/summary.json — totals and freshness
+- https://parks.soli.blue/data/sources.json — source provenance and coverage
+
+These files are build artifacts, not a stability-guaranteed public API. The
+canonical park identifier is Berlin's official PITID.
+
+## Sources and terms
+
+Park and amenity data: Land Berlin WFS services, dl-de-zero-2.0.
+Background map: basemap.de Web Vektor.
+Project code: MIT.

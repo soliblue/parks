@@ -1,0 +1,101 @@
+name: Refresh Berlin park data
+
+on:
+  schedule:
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: parks-data-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Refresh and validate data
+        run: |
+          npm run data:refresh
+          npm run data:check
+
+      - name: Detect meaningful data changes
+        id: changes
+        shell: bash
+        run: |
+          git status --porcelain -- public/data > /tmp/parks-data-status
+          if [ -s /tmp/parks-data-status ]; then
+            printf 'changed=true\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'changed=false\n' >> "$GITHUB_OUTPUT"
+            printf 'No upstream data change; skipping build, commit, and deploy.\n'
+          fi
+
+      - name: Install Playwright Chromium
+        if: steps.changes.outputs.changed == 'true'
+        run: npx playwright install --with-deps chromium
+
+      - name: Build and test changed snapshot
+        if: steps.changes.outputs.changed == 'true'
+        run: npm test
+
+      - name: Commit and push changed snapshot
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- public/data
+          git commit -m "data: refresh Berlin park snapshot [skip ci]"
+          git push origin HEAD:main
+
+      - name: Deploy refreshed snapshot to Cloudflare Pages
+        id: deploy
+        if: steps.changes.outputs.changed == 'true'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          PARKS_COMMIT_SHA="$(git rev-parse HEAD)"
+          DEPLOY_OUTPUT="$(npx wrangler pages deploy dist \
+            --project-name=parks \
+            --branch=main \
+            --commit-hash="$PARKS_COMMIT_SHA" \
+            --commit-dirty=false)"
+          printf '%s\n' "$DEPLOY_OUTPUT"
+          DEPLOYMENT_URL="$(printf '%s\n' "$DEPLOY_OUTPUT" |
+            grep -Eo 'https://[[:alnum:].-]+\.pages\.dev' |
+            tail -n 1)"
+          test -n "$DEPLOYMENT_URL"
+          printf 'deployment_url=%s\n' "$DEPLOYMENT_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Verify immutable deployment and custom domain
+        if: steps.changes.outputs.changed == 'true'
+        env:
+          DEPLOYMENT_URL: ${{ steps.deploy.outputs.deployment_url }}
+        run: |
+          for URL in "$DEPLOYMENT_URL" "https://parks.soli.blue"; do
+            curl --fail --silent --show-error --location \
+              --retry 20 --retry-delay 5 --retry-all-errors "$URL/" > /dev/null
+            curl --fail --silent --show-error --location \
+              --retry 20 --retry-delay 5 --retry-all-errors \
+              "$URL/data/summary.json" |
+              node -e 'let body="";process.stdin.on("data",chunk=>body+=chunk).on("end",()=>{const value=JSON.parse(body);if(value.schemaVersion!==1||value.city!=="Berlin")process.exit(1)})'
+          done

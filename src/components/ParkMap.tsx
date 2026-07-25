@@ -1,0 +1,553 @@
+import buffer from '@turf/buffer'
+import { point } from '@turf/helpers'
+import { ChevronLeft, Crosshair, Minus, Plus } from 'lucide-react'
+import maplibregl, {
+  GeoJSONSource,
+  Map as MapLibreMap,
+  Marker,
+  type FilterSpecification,
+  type MapMouseEvent,
+} from 'maplibre-gl'
+import { useEffect, useRef, useState } from 'react'
+import type { Feature, FeatureCollection, Polygon } from 'geojson'
+import type { Coordinate, Park, ParksGeoJson } from '../lib/parks'
+
+const BASEMAP_STYLE =
+  'https://sgx.geodatenzentrum.de/gdz_basemapde_vektor/styles/bm_web_gry.json'
+const BERLIN_CENTER: Coordinate = [13.405, 52.52]
+const BAND_KILOMETERS = [
+  { minutes: 15, distance: 1.05 },
+  { minutes: 10, distance: 0.7 },
+  { minutes: 5, distance: 0.35 },
+] as const
+
+const softenOfficialBasemap = (map: MapLibreMap) => {
+  const layers = map.getStyle().layers ?? []
+  const setPaint = (layerId: string, property: string, value: unknown) => {
+    try {
+      map.setPaintProperty(layerId, property, value)
+    } catch {
+      // Some upstream layers intentionally omit optional paint capabilities.
+    }
+  }
+
+  for (const layer of layers) {
+    const sourceLayer =
+      (layer as { 'source-layer'?: string })['source-layer'] ?? ''
+    const signature = `${layer.id} ${sourceLayer}`.toLocaleLowerCase('de-DE')
+    const isWater =
+      /gewaesser|wasser|meer|see|hafen|fluss|kanal/.test(signature)
+    const isVegetation =
+      /vegetation|wald|forst|gehoelz|gruenland|garten|friedhof|sportfreizeit|erholung/.test(
+        signature,
+      )
+    const isBuilding = /gebaeude|bauwerk|building/.test(signature)
+    const isSettlement = /siedlung|industrie|gewerbe/.test(signature)
+    const isRoad =
+      /verkehr|strasse|autobahn|bundesstr|landesstr|kreisstr|gemeindestr|fahrbahn|fussweg|wirtschaftsweg/.test(
+        signature,
+      )
+    const isRoadDeck = /decker/.test(signature)
+    const isRail = /bahn|gleis|schiene/.test(signature)
+
+    switch (layer.type) {
+      case 'background':
+        setPaint(layer.id, 'background-color', '#ffffff')
+        setPaint(layer.id, 'background-opacity', 1)
+        break
+      case 'fill':
+        if (/hintergrund/.test(signature)) {
+          setPaint(layer.id, 'fill-color', '#ffffff')
+          setPaint(layer.id, 'fill-opacity', 1)
+        } else if (isWater) {
+          setPaint(layer.id, 'fill-color', '#e7eff2')
+          setPaint(layer.id, 'fill-outline-color', '#d8e4e8')
+          setPaint(layer.id, 'fill-opacity', 0.84)
+        } else if (isVegetation) {
+          setPaint(layer.id, 'fill-color', '#e7f1e5')
+          setPaint(layer.id, 'fill-outline-color', '#d9e7d6')
+          setPaint(layer.id, 'fill-opacity', 0.68)
+        } else if (isBuilding) {
+          setPaint(layer.id, 'fill-color', '#ecefed')
+          setPaint(layer.id, 'fill-outline-color', '#dde2df')
+          setPaint(layer.id, 'fill-opacity', 0.48)
+        } else if (isSettlement) {
+          setPaint(layer.id, 'fill-color', '#f3f5f3')
+          setPaint(layer.id, 'fill-outline-color', '#e7eae8')
+          setPaint(layer.id, 'fill-opacity', 0.72)
+        } else {
+          setPaint(layer.id, 'fill-color', '#f8f9f8')
+          setPaint(layer.id, 'fill-outline-color', '#e8ebe9')
+          setPaint(layer.id, 'fill-opacity', 0.62)
+        }
+        break
+      case 'line':
+        if (isWater) {
+          setPaint(layer.id, 'line-color', '#cbdde3')
+          setPaint(layer.id, 'line-opacity', 0.52)
+        } else if (isRoadDeck) {
+          setPaint(layer.id, 'line-color', '#ffffff')
+          setPaint(layer.id, 'line-opacity', 0.82)
+        } else if (isRoad) {
+          setPaint(layer.id, 'line-color', '#d8dedb')
+          setPaint(layer.id, 'line-opacity', 0.42)
+        } else if (isRail) {
+          setPaint(layer.id, 'line-color', '#c8cfcb')
+          setPaint(layer.id, 'line-opacity', 0.4)
+        } else if (isVegetation) {
+          setPaint(layer.id, 'line-color', '#cfdfcc')
+          setPaint(layer.id, 'line-opacity', 0.4)
+        } else {
+          setPaint(layer.id, 'line-color', '#d8ddda')
+          setPaint(layer.id, 'line-opacity', 0.34)
+        }
+        break
+      case 'symbol':
+        setPaint(layer.id, 'text-color', '#66706b')
+        setPaint(layer.id, 'text-halo-color', '#ffffff')
+        setPaint(layer.id, 'text-halo-width', 1.4)
+        setPaint(layer.id, 'text-halo-blur', 0.25)
+        setPaint(layer.id, 'text-opacity', isRoad ? 0.48 : 0.66)
+        setPaint(layer.id, 'icon-opacity', 0.46)
+        break
+      case 'circle':
+        setPaint(layer.id, 'circle-color', '#aeb7b2')
+        setPaint(layer.id, 'circle-stroke-color', '#ffffff')
+        setPaint(layer.id, 'circle-opacity', 0.5)
+        setPaint(layer.id, 'circle-stroke-opacity', 0.72)
+        break
+      case 'raster':
+        setPaint(layer.id, 'raster-opacity', 0.35)
+        break
+    }
+  }
+}
+
+interface HandlerRefs {
+  onOriginChange: (coordinate: Coordinate) => void
+  onParkSelect: (parkId: string) => void
+  onLocationMessage: (message: string | null) => void
+}
+
+interface ParkMapProps {
+  geojson: ParksGeoJson
+  origin: Coordinate | null
+  parks: Park[]
+  panelOpen: boolean
+  selectedParkId: string | null
+  visibleParkIds: readonly string[]
+  onOriginChange: (coordinate: Coordinate) => void
+  onParkSelect: (parkId: string) => void
+  onPanelToggle: () => void
+  onLocationMessage: (message: string | null) => void
+}
+
+const buildBands = (
+  origin: Coordinate,
+): FeatureCollection<Polygon, { minutes: number }> => {
+  const features = BAND_KILOMETERS.flatMap(({ minutes, distance }) => {
+    const polygon = buffer(point(origin), distance, {
+      units: 'kilometers',
+      steps: 64,
+    })
+    if (!polygon) return []
+    return [
+      {
+        ...polygon,
+        properties: { minutes },
+      } as Feature<Polygon, { minutes: number }>,
+    ]
+  })
+  return { type: 'FeatureCollection', features }
+}
+
+const syncMapData = (
+  map: MapLibreMap,
+  geojson: ParksGeoJson,
+  origin: Coordinate | null,
+) => {
+  if (!map.isStyleLoaded()) return
+
+  const parkSource = map.getSource('parks') as GeoJSONSource | undefined
+  if (parkSource) {
+    parkSource.setData(geojson)
+  } else {
+    map.addSource('parks', { type: 'geojson', data: geojson })
+    map.addLayer({
+      id: 'park-fill',
+      type: 'fill',
+      source: 'parks',
+      paint: {
+        'fill-color': '#34c759',
+        'fill-opacity': 0.07,
+      },
+    })
+    map.addLayer({
+      id: 'park-outline',
+      type: 'line',
+      source: 'parks',
+      paint: {
+        'line-color': '#34c759',
+        'line-opacity': 0.2,
+        'line-width': 0.7,
+      },
+    })
+    map.addLayer({
+      id: 'park-selected',
+      type: 'line',
+      source: 'parks',
+      filter: ['==', ['get', 'id'], '__none__'],
+      paint: {
+        'line-color': '#0a0a0a',
+        'line-width': 3,
+      },
+    })
+  }
+
+  const bandData: FeatureCollection<Polygon, { minutes: number }> = origin
+    ? buildBands(origin)
+    : { type: 'FeatureCollection', features: [] }
+  const bandSource = map.getSource('distance-bands') as
+    | GeoJSONSource
+    | undefined
+  if (bandSource) {
+    bandSource.setData(bandData)
+  } else {
+    map.addSource('distance-bands', { type: 'geojson', data: bandData })
+    map.addLayer(
+      {
+        id: 'distance-band-fill',
+        type: 'fill',
+        source: 'distance-bands',
+        paint: {
+          'fill-color': [
+            'match',
+            ['get', 'minutes'],
+            5,
+            '#dff5e4',
+            10,
+            '#bce9c5',
+            '#8bd89c',
+          ],
+          'fill-opacity': 0.24,
+        },
+      },
+      'park-fill',
+    )
+    map.addLayer(
+      {
+        id: 'distance-band-outline',
+        type: 'line',
+        source: 'distance-bands',
+        paint: {
+          'line-color': '#34c759',
+          'line-opacity': 0.58,
+          'line-width': 1.6,
+        },
+      },
+      'park-fill',
+    )
+  }
+}
+
+export function ParkMap({
+  geojson,
+  origin,
+  parks,
+  panelOpen,
+  selectedParkId,
+  visibleParkIds,
+  onOriginChange,
+  onParkSelect,
+  onPanelToggle,
+  onLocationMessage,
+}: ParkMapProps) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const mapRef = useRef<MapLibreMap | null>(null)
+  const markerRef = useRef<Marker | null>(null)
+  const bandLabelMarkersRef = useRef<Marker[]>([])
+  const latestDataRef = useRef({ geojson, origin })
+  const handlersRef = useRef<HandlerRefs>({
+    onOriginChange,
+    onParkSelect,
+    onLocationMessage,
+  })
+  const [mapReady, setMapReady] = useState(false)
+  const [mapError, setMapError] = useState<string | null>(null)
+
+  latestDataRef.current = { geojson, origin }
+  handlersRef.current = {
+    onOriginChange,
+    onParkSelect,
+    onLocationMessage,
+  }
+
+  useEffect(() => {
+    if (!containerRef.current) return
+
+    const map = new MapLibreMap({
+      container: containerRef.current,
+      style: BASEMAP_STYLE,
+      center: BERLIN_CENTER,
+      zoom: 11.15,
+      minZoom: 8,
+      maxZoom: 19,
+      attributionControl: false,
+      cooperativeGestures: true,
+    })
+    mapRef.current = map
+
+    const handleLoad = () => {
+      softenOfficialBasemap(map)
+      syncMapData(
+        map,
+        latestDataRef.current.geojson,
+        latestDataRef.current.origin,
+      )
+      setMapReady(true)
+      setMapError(null)
+    }
+
+    const handleClick = (event: MapMouseEvent) => {
+      const parkFeatures = map.getLayer('park-fill')
+        ? map.queryRenderedFeatures(event.point, { layers: ['park-fill'] })
+        : []
+      const parkId = parkFeatures[0]?.properties?.id
+      handlersRef.current.onOriginChange([
+        event.lngLat.lng,
+        event.lngLat.lat,
+      ])
+      handlersRef.current.onLocationMessage(null)
+      if (parkId) handlersRef.current.onParkSelect(String(parkId))
+    }
+
+    const handleMouseMove = (event: MapMouseEvent) => {
+      const hasPark =
+        map.getLayer('park-fill') &&
+        map.queryRenderedFeatures(event.point, { layers: ['park-fill'] })
+          .length > 0
+      map.getCanvas().style.cursor = hasPark ? 'pointer' : ''
+    }
+
+    map.on('load', handleLoad)
+    map.on('click', handleClick)
+    map.on('mousemove', handleMouseMove)
+    map.on('error', () => {
+      if (!map.isStyleLoaded()) {
+        setMapError('Die Basiskarte konnte nicht geladen werden.')
+      }
+    })
+
+    return () => {
+      bandLabelMarkersRef.current.forEach((marker) => marker.remove())
+      bandLabelMarkersRef.current = []
+      markerRef.current?.remove()
+      markerRef.current = null
+      map.remove()
+      mapRef.current = null
+    }
+  }, [])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    syncMapData(map, geojson, origin)
+  }, [geojson, mapReady, origin])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !mapReady) return
+
+    const filter: FilterSpecification =
+      visibleParkIds.length > 0
+        ? ['in', ['get', 'id'], ['literal', visibleParkIds]]
+        : ['==', ['get', 'id'], '__none__']
+    map.setFilter('park-fill', filter)
+    map.setFilter('park-outline', filter)
+  }, [mapReady, visibleParkIds])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !mapReady) return
+    map.setFilter('park-selected', [
+      '==',
+      ['get', 'id'],
+      selectedParkId ?? '__none__',
+    ])
+
+    if (!selectedParkId) return
+    const park = parks.find((item) => item.id === selectedParkId)
+    if (!park) return
+    const [west, south, east, north] = park.bounds
+    if (west !== east && south !== north) {
+      map.fitBounds(
+        [
+          [west, south],
+          [east, north],
+        ],
+        {
+          padding: {
+            top: 90,
+            right: 72,
+            bottom: window.innerWidth <= 760 ? window.innerHeight * 0.52 : 90,
+            left: 72,
+          },
+          maxZoom: 15.5,
+          duration: 700,
+        },
+      )
+    } else {
+      map.flyTo({ center: park.centroid, zoom: 14.5, duration: 700 })
+    }
+  }, [mapReady, parks, selectedParkId])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+
+    bandLabelMarkersRef.current.forEach((marker) => marker.remove())
+    bandLabelMarkersRef.current = []
+
+    if (!origin) {
+      markerRef.current?.remove()
+      markerRef.current = null
+      return
+    }
+
+    if (!markerRef.current) {
+      const markerElement = document.createElement('div')
+      markerElement.className = 'origin-marker'
+      markerElement.dataset.testid = 'selected-origin'
+      markerElement.setAttribute('aria-label', 'Gewählter Ausgangspunkt')
+      markerElement.setAttribute('role', 'img')
+      markerRef.current = new Marker({
+        element: markerElement,
+        draggable: true,
+        anchor: 'center',
+      })
+        .setLngLat(origin)
+        .addTo(map)
+      markerRef.current.on('dragend', () => {
+        const coordinate = markerRef.current?.getLngLat()
+        if (!coordinate) return
+        handlersRef.current.onOriginChange([coordinate.lng, coordinate.lat])
+        handlersRef.current.onLocationMessage(null)
+      })
+    } else {
+      markerRef.current.setLngLat(origin)
+    }
+
+    if (map.getZoom() < 12.25) {
+      map.easeTo({
+        center: origin,
+        zoom: 12.75,
+        duration: 600,
+      })
+    }
+
+    bandLabelMarkersRef.current = BAND_KILOMETERS.map(
+      ({ minutes, distance }) => {
+        const element = document.createElement('span')
+        element.className = 'distance-band-label'
+        element.textContent = `${minutes} min`
+        return new Marker({ element, anchor: 'bottom' })
+          .setLngLat([origin[0] - distance / 150, origin[1] + distance / 111])
+          .addTo(map)
+      },
+    )
+  }, [mapReady, origin])
+
+  const zoomBy = (delta: number) => {
+    const map = mapRef.current
+    if (!map) return
+    map.easeTo({ zoom: map.getZoom() + delta, duration: 220 })
+  }
+
+  const useLocation = () => {
+    if (!navigator.geolocation) {
+      onLocationMessage('Dein Browser unterstützt keine Standortabfrage.')
+      return
+    }
+    onLocationMessage('Standort wird ermittelt …')
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const coordinate: Coordinate = [
+          position.coords.longitude,
+          position.coords.latitude,
+        ]
+        onOriginChange(coordinate)
+        onLocationMessage(null)
+      },
+      () => {
+        onLocationMessage(
+          'Der Standort war nicht verfügbar. Klicke stattdessen in die Karte.',
+        )
+      },
+      { enableHighAccuracy: true, maximumAge: 60_000, timeout: 10_000 },
+    )
+  }
+
+  return (
+    <section
+      className="map-shell"
+      data-testid="park-map"
+      aria-label="Karte der Berliner Parks"
+    >
+      <div className="map-canvas" ref={containerRef} />
+      <button
+        aria-label={panelOpen ? 'Informationen ausblenden' : 'Informationen einblenden'}
+        className="panel-toggle map-control"
+        onClick={onPanelToggle}
+        type="button"
+      >
+        <ChevronLeft aria-hidden="true" />
+      </button>
+      <div className="zoom-controls">
+        <button
+          aria-label="Karte vergrößern"
+          className="map-control"
+          onClick={() => zoomBy(1)}
+          type="button"
+        >
+          <Plus aria-hidden="true" />
+        </button>
+        <button
+          aria-label="Karte verkleinern"
+          className="map-control"
+          onClick={() => zoomBy(-1)}
+          type="button"
+        >
+          <Minus aria-hidden="true" />
+        </button>
+      </div>
+      <button
+        aria-label="Meinen Standort verwenden"
+        className="location-control map-control"
+        onClick={useLocation}
+        type="button"
+      >
+        <Crosshair aria-hidden="true" />
+      </button>
+      <div className="map-credit">
+        © GeoBasis-DE /{' '}
+        <a href="https://www.bkg.bund.de/" rel="noreferrer" target="_blank">
+          BKG
+        </a>{' '}
+        2026 ·{' '}
+        <a
+          href="https://creativecommons.org/licenses/by/4.0/"
+          rel="noreferrer"
+          target="_blank"
+        >
+          CC BY 4.0
+        </a>{' '}
+        · Darstellung verändert
+      </div>
+      {mapError ? (
+        <p className="map-error" role="status">
+          {mapError}
+        </p>
+      ) : null}
+    </section>
+  )
+}
