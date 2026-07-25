@@ -41,33 +41,46 @@ const expectFiniteOverviewMetrics = async (page: Page) => {
   for (const metric of COMPARISON_METRICS) {
     const tile = overview.locator(`[data-metric="${metric}"]`)
     await expect(tile).toBeVisible()
-    const value = parseDisplayedNumber(
-      await tile.locator('strong').textContent(),
-    )
-    expect(Number.isFinite(value), `${metric} overview value`).toBe(true)
+    await expect
+      .poll(
+        async () =>
+          Number.isFinite(
+            parseDisplayedNumber(await tile.locator('strong').textContent()),
+          ),
+        { message: `${metric} overview value` },
+      )
+      .toBe(true)
   }
 }
 
 const expectCardsRankedDescending = async (page: Page) => {
   const cards = page.locator('.city-card')
   await expect(cards).toHaveCount(9)
-  const entries = await cards.evaluateAll((items) =>
-    items.map((item) => ({
-      rank: Number(item.getAttribute('data-rank')),
-      value: item
-        .querySelector('[data-testid="city-card-value"]')
-        ?.textContent?.trim(),
-    })),
-  )
-  const values = entries.map((entry) => parseDisplayedNumber(entry.value ?? null))
-
-  expect(entries.map((entry) => entry.rank)).toEqual([
-    1, 2, 3, 4, 5, 6, 7, 8, 9,
-  ])
-  expect(values.every(Number.isFinite)).toBe(true)
-  for (let index = 1; index < values.length; index += 1) {
-    expect(values[index - 1]).toBeGreaterThanOrEqual(values[index])
-  }
+  await expect
+    .poll(
+      async () => {
+        const entries = await cards.evaluateAll((items) =>
+          items.map((item) => ({
+            rank: Number(item.getAttribute('data-rank')),
+            value: item
+              .querySelector('[data-testid="city-card-value"]')
+              ?.textContent?.trim(),
+          })),
+        )
+        const values = entries.map((entry) =>
+          parseDisplayedNumber(entry.value ?? null),
+        )
+        return (
+          entries.every((entry, index) => entry.rank === index + 1) &&
+          values.every(Number.isFinite) &&
+          values.every(
+            (value, index) => index === 0 || values[index - 1] >= value,
+          )
+        )
+      },
+      { message: 'city cards are ranked by finite descending values' },
+    )
+    .toBe(true)
 }
 
 const parkAtBandEdge = (
@@ -422,12 +435,21 @@ test('desktop shows an information rail beside the map', async ({ page }) => {
   await expect(
     page.getByText('Karte: basemap.de', { exact: true }),
   ).toBeVisible()
-
-  const [railBox, mapBox] = await Promise.all([rail.boundingBox(), map.boundingBox()])
-  expect(railBox).not.toBeNull()
-  expect(mapBox).not.toBeNull()
-  expect(mapBox!.x).toBeGreaterThan(railBox!.x)
-  expect(mapBox!.width).toBeGreaterThan(railBox!.width)
+  await expect(map).toHaveAttribute('data-map-ready', 'true')
+  await expect
+    .poll(async () => {
+      const [railBox, mapBox] = await Promise.all([
+        rail.boundingBox(),
+        map.boundingBox(),
+      ])
+      return Boolean(
+        railBox &&
+          mapBox &&
+          mapBox.x > railBox.x &&
+          mapBox.width > railBox.width,
+      )
+    })
+    .toBe(true)
 })
 
 test('search and amenity filters update their visible state', async ({ page }) => {
