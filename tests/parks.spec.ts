@@ -14,11 +14,61 @@ test('initial load renders the Berlin overview', async ({ page }) => {
   const response = await page.goto('/')
 
   expect(response?.ok()).toBeTruthy()
-  await expect(page).toHaveTitle(/Parkblick/)
+  await expect(page).toHaveTitle(/Berlin · Parks & Stadtgrün/)
   await expect(appHeading(page)).toBeVisible()
   await expect(page.getByText('Berlin im Überblick', { exact: true })).toBeVisible()
   await expect(page.getByText('Parks in der Nähe', { exact: true })).toBeVisible()
   await expect(page.getByText(/Daten:\s*Land Berlin/i)).toBeVisible()
+  await expect(page.locator('.access-stat')).toContainText(
+    /der Bevölkerung mit Parkzugang in 10 Gehminuten/,
+  )
+})
+
+test('loads Vienna directly and keeps the selected city in the URL', async ({
+  page,
+}) => {
+  await page.goto('/?city=vienna')
+
+  await expect(page).toHaveTitle(/Wien · Parks & Stadtgrün/)
+  await expect(page.getByText('Wien im Überblick', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: /^Wien\b/ })).toHaveAttribute(
+    'aria-current',
+    'page',
+  )
+  await expect(page).toHaveURL(/(?:\?|&)city=vienna(?:&|$)/)
+  await expect(page.getByText(/Daten:\s*Stadt Wien/i)).toBeVisible()
+  await expect(page.locator('.access-stat')).toContainText(
+    /der Bevölkerung mit Parkzugang in 10 Gehminuten/,
+  )
+  await expect(page.getByTestId('park-map')).toHaveAttribute(
+    'aria-label',
+    'Karte der Parks in Wien',
+  )
+  await searchInput(page).fill('Kongreßpark')
+  await expect(page.locator('.park-result').first()).toContainText(
+    'Kongreßpark',
+  )
+})
+
+test('switches cities without downloading both park files up front', async ({
+  page,
+}) => {
+  const parkFiles: string[] = []
+  page.on('request', (request) => {
+    if (/\/data\/(?:berlin|vienna)\/parks\.geojson/.test(request.url())) {
+      parkFiles.push(request.url())
+    }
+  })
+
+  await page.goto('/')
+  await expect(page.getByText('Berlin im Überblick', { exact: true })).toBeVisible()
+  await expect.poll(() => parkFiles.filter((url) => url.includes('/berlin/')).length).toBe(1)
+  expect(parkFiles.some((url) => url.includes('/vienna/'))).toBe(false)
+
+  await page.getByRole('button', { name: /^Wien\b/ }).click()
+  await expect(page.getByText('Wien im Überblick', { exact: true })).toBeVisible()
+  await expect(page).toHaveURL(/(?:\?|&)city=vienna(?:&|$)/)
+  await expect.poll(() => parkFiles.filter((url) => url.includes('/vienna/')).length).toBe(1)
 })
 
 test('desktop shows an information rail beside the map', async ({ page }) => {
@@ -28,7 +78,9 @@ test('desktop shows an information rail beside the map', async ({ page }) => {
   const map = parkMap(page)
   await expect(rail).toBeVisible()
   await expect(map).toBeVisible()
-  await expect(page.getByText(/Karte:\s*basemap\.de/i)).toBeVisible()
+  await expect(
+    page.getByText('Karte: basemap.de', { exact: true }),
+  ).toBeVisible()
 
   const [railBox, mapBox] = await Promise.all([rail.boundingBox(), map.boundingBox()])
   expect(railBox).not.toBeNull()
@@ -98,7 +150,7 @@ test('rejects mixed data snapshot generations after one retry', async ({
   page,
 }) => {
   let summaryRequests = 0
-  await page.route('**/data/summary.json*', async (route) => {
+  await page.route('**/data/berlin/summary.json*', async (route) => {
     summaryRequests += 1
     const response = await route.fetch()
     const summary = (await response.json()) as Record<string, unknown>

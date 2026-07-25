@@ -1,7 +1,7 @@
 {
-  "name": "Parkblick",
-  "short_name": "Parkblick",
-  "description": "Berlins öffentliche Parks und Grünanlagen in deiner Nähe.",
+  "name": "Parks",
+  "short_name": "Parks",
+  "description": "Öffentliche Parks und Stadtgrün in Berlin und Wien vergleichen.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",

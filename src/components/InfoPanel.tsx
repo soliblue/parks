@@ -7,6 +7,7 @@ import {
   Trees,
 } from 'lucide-react'
 import type { ChangeEvent } from 'react'
+import type { CityConfig, CityId } from '../lib/cities'
 import {
   formatHectares,
   formatInteger,
@@ -21,6 +22,8 @@ import { ParkResults } from './ParkResults'
 
 interface InfoPanelProps {
   amenities: readonly AmenityKey[]
+  cities: readonly CityConfig[]
+  city: CityConfig
   loading: boolean
   locationMessage: string | null
   nearbyParks: NearbyPark[]
@@ -30,12 +33,15 @@ interface InfoPanelProps {
   summary: ParkSummary
   warning: string | null
   onAmenityToggle: (key: AmenityKey) => void
+  onCitySelect: (cityId: CityId) => void
   onQueryChange: (query: string) => void
   onParkSelect: (parkId: string) => void
 }
 
 export function InfoPanel({
   amenities,
+  cities,
+  city,
   loading,
   locationMessage,
   nearbyParks,
@@ -45,6 +51,7 @@ export function InfoPanel({
   summary,
   warning,
   onAmenityToggle,
+  onCitySelect,
   onQueryChange,
   onParkSelect,
 }: InfoPanelProps) {
@@ -55,6 +62,7 @@ export function InfoPanel({
       ? '…'
       : '—'
   const statusMessage = warning ?? locationMessage
+  const freshnessDate = summary.sourceUpdatedAt ?? summary.generatedAt
 
   const handleSearch = (event: ChangeEvent<HTMLInputElement>) => {
     onQueryChange(event.target.value)
@@ -64,15 +72,66 @@ export function InfoPanel({
     <aside
       className="information-rail"
       data-testid="information-rail"
-      aria-label="Parkblick Informationen"
+      aria-label="Parks und Stadtgrün"
     >
       <div className="sheet-handle" aria-hidden="true" />
       <header className="brand-header">
-        <h1>Parkblick</h1>
+        <p>Parks &amp; Stadtgrün</p>
+        <h1>Städte vergleichen</h1>
       </header>
 
+      <nav className="city-comparison" aria-label="Städte auswählen">
+        {cities.map((candidate) => {
+          const selected = candidate.id === city.id
+          const hectares =
+            candidate.totalAreaM2 === null
+              ? '—'
+              : formatInteger(Math.round(candidate.totalAreaM2 / 10_000))
+          return (
+            <button
+              aria-current={selected ? 'page' : undefined}
+              className="city-card"
+              data-city={candidate.id}
+              key={candidate.id}
+              onClick={() => onCitySelect(candidate.id)}
+              type="button"
+            >
+              <span className="city-card-heading">{candidate.name}</span>
+              <strong>
+                {candidate.access
+                  ? `${new Intl.NumberFormat('de-DE', {
+                      maximumFractionDigits: 1,
+                    }).format(candidate.access.sharePercent)} %`
+                  : `${hectares} ha`}
+              </strong>
+              <small>
+                {candidate.access
+                  ? 'mit Parkzugang in 10 Min.'
+                  : 'öffentliches Grün'}
+              </small>
+            </button>
+          )
+        })}
+      </nav>
+
       <section className="overview" aria-labelledby="overview-heading">
-        <h2 id="overview-heading">Berlin im Überblick</h2>
+        <h2 id="overview-heading">{city.name} im Überblick</h2>
+        {city.access ? (
+          <div className="access-stat">
+            <strong>
+              {new Intl.NumberFormat('de-DE', {
+                maximumFractionDigits: 1,
+              }).format(city.access.sharePercent)}{' '}
+              %
+            </strong>
+            <span>der Bevölkerung mit Parkzugang in 10 Gehminuten</span>
+            <small>
+              Schätzung, Zensus {city.access.populationYear} ·{' '}
+              {formatInteger(city.access.populationWithinThreshold)} von{' '}
+              {formatInteger(city.access.populationTotal)} Personen
+            </small>
+          </div>
+        ) : null}
         <p className="area-stat">
           <strong>{areaHectares}</strong>
           <span> Hektar öffentliches Grün</span>
@@ -94,7 +153,7 @@ export function InfoPanel({
             <Clock3 aria-hidden="true" />
             <span>
               {hasSnapshot
-                ? `Stand ${formatSourceDate(summary.sourceUpdatedAt)}`
+                ? `${summary.sourceUpdatedAt ? 'Stand' : 'Abruf'} ${formatSourceDate(freshnessDate)}`
                 : loading
                   ? 'Daten werden geladen'
                   : 'Stand unbekannt'}
@@ -157,41 +216,73 @@ export function InfoPanel({
 
       <details className="source-disclosure">
         <summary>
-          <span>Daten: Land Berlin</span>
+          <span>Daten: {city.dataSourceLabel}</span>
           <span aria-hidden="true">·</span>
-          <span>Karte: basemap.de</span>
+          <span>Karte: {city.mapSourceLabel}</span>
           <ExternalLink aria-hidden="true" />
         </summary>
         <div>
           <p>
             Parkflächen und Ausstattungen:{' '}
             <a
-              href="https://daten.berlin.de/datensaetze/grunanlagenbestand-berlin-einschliesslich-der-offentlichen-spielplatze-wfs-737fd0a4"
+              href={city.dataSourceUrl}
               rel="noreferrer"
               target="_blank"
             >
-              Land Berlin
+              {city.dataSourceLabel}
             </a>
             ,{' '}
             <a
-              href="https://www.govdata.de/dl-de/zero-2-0"
+              href={city.licenseUrl}
               rel="noreferrer"
               target="_blank"
             >
-              dl-de/zero-2.0
+              {city.licenseLabel}
             </a>
-            . Basiskarte: GeoBasis-DE / BKG (
-            <a href="https://basemap.de/" rel="noreferrer" target="_blank">
-              basemap.de
+            . {city.dataAttribution}. Basiskarte:{' '}
+            <a href={city.mapSourceUrl} rel="noreferrer" target="_blank">
+              {city.mapSourceLabel}
             </a>
-            ).
+            .
           </p>
           <p>
-            Gehzeiten sind Luftlinien-Schätzungen bei 4,2 km/h, keine gerouteten
-            Isochronen. Ausstattungen zeigen in der Parkfläche oder bis zu 75 m
-            entfernt gefundene Einträge; fehlende Einträge sind keine
-            bestätigte Abwesenheit.
+            Die 5/10/15-Minuten-Ringe ab einem gewählten Kartenpunkt sind
+            Luftlinien-Schätzungen bei 4,2 km/h. Ausstattungen zeigen in der
+            Parkfläche oder bis zu 75 m entfernt gefundene Einträge; fehlende
+            Einträge sind keine bestätigte Abwesenheit.
           </p>
+          {city.access ? (
+            <p>
+              Der 10-Minuten-Wert nutzt Wohnbevölkerung des Zensus{' '}
+              {city.access.populationYear} als Nenner. Der Zähler umfasst
+              modellierte Einwohner innerhalb von {city.access.thresholdMeters}{' '}
+              m im Fußwegenetz zu einer mindestens 0,5 ha großen, öffentlich
+              zugänglichen Grünfläche. Bevölkerungsraster:{' '}
+              <a
+                href="https://data.jrc.ec.europa.eu/dataset/98336641-fd1c-4992-8c7b-c470dd5eb81e"
+                rel="noreferrer"
+                target="_blank"
+              >
+                EC JRC
+              </a>
+              ; Fußwegenetz:{' '}
+              <a
+                href="https://www.openstreetmap.org/copyright"
+                rel="noreferrer"
+                target="_blank"
+              >
+                © OpenStreetMap-Mitwirkende
+              </a>
+              . Ergebnis ist eine Modellschätzung, keine adressgenaue
+              Erreichbarkeitsgarantie.
+            </p>
+          ) : (
+            <p>
+              Der vergleichbare 10-Minuten-Wert wird aus Bevölkerungsraster,
+              Fußwegenetz und Parkzugängen berechnet und folgt mit dem nächsten
+              Datenlauf.
+            </p>
+          )}
           <p>
             {hasSnapshot
               ? `Geladene Parkfläche: ${formatHectares(summary.totalAreaM2)} Hektar.`

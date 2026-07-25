@@ -1,5 +1,5 @@
 [Unit]
-Description=Weekly Parkblick Berlin data refresh
+Description=Weekly parks data refresh
 
 [Timer]
 OnCalendar=Mon 05:17

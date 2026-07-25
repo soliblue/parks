@@ -30,4 +30,11 @@ test('mobile presents the park controls as a bottom sheet', async ({ page }) => 
   const mapScreenshot = await map.screenshot()
   const mapStats = await sharp(mapScreenshot).stats()
   expect(mapStats.entropy).toBeGreaterThan(3)
+
+  await page.getByRole('button', { name: /^Wien\b/ }).click()
+  await expect(page).toHaveURL(/(?:\?|&)city=vienna(?:&|$)/)
+  await expect(page.getByText('Wien im Überblick', { exact: true })).toBeVisible()
+  await page.waitForTimeout(3_000)
+  const viennaMapStats = await sharp(await map.screenshot()).stats()
+  expect(viennaMapStats.entropy).toBeGreaterThan(3)
 })

@@ -1,35 +1,40 @@
-# Parkblick
+# Parks
 
-> Berlin-first explorer for official public parks and green spaces. Static,
-> source-backed, and free of paid Google services.
+> Comparison of official public parks and green spaces in Berlin and Vienna.
+> Static, source-backed, and free of paid map APIs.
 
 Canonical URL: https://parks.soli.blue/
 Language: German
-Geographic scope: Berlin, Germany
+Geographic scope: Berlin, Germany and Vienna, Austria
 
 ## What the site provides
 
-- A map and searchable list of Berlin public parks and green spaces
+- A city comparison plus maps and searchable lists for Berlin and Vienna
+- A population-weighted estimate of access within a 10-minute walk
 - District and positively matched amenity filters
 - Optional browser geolocation or a map-selected origin
 - Local straight-line distance and 5/10/15-minute estimates
 - Visible data source, map attribution, methodology, and freshness
 
-The time bands are estimates, not routed walking isochrones. Missing amenity
-coverage is not evidence that an amenity is absent.
+The rings drawn from a selected map point are straight-line estimates. The
+city-level access comparison is a separately computed pedestrian-network
+estimate. Missing amenity coverage is not evidence that an amenity is absent.
 
 ## Public static data
 
-- https://parks.soli.blue/data/parks.geojson — normalized park geometry
-- https://parks.soli.blue/data/parks-index.json — search and nearby index
-- https://parks.soli.blue/data/summary.json — totals and freshness
-- https://parks.soli.blue/data/sources.json — source provenance and coverage
+- https://parks.soli.blue/data/cities.json — city catalog and comparison totals
+- https://parks.soli.blue/data/access.json — access estimate and methodology
+- https://parks.soli.blue/data/berlin/ — Berlin geometry, index, summary, sources
+- https://parks.soli.blue/data/vienna/ — Vienna geometry, index, summary, sources
 
 These files are build artifacts, not a stability-guaranteed public API. The
-canonical park identifier is Berlin's official PITID.
+Berlin uses the official PITID; Vienna uses the official OBJECTID with a city
+prefix.
 
 ## Sources and terms
 
-Park and amenity data: Land Berlin WFS services, dl-de-zero-2.0.
-Background map: basemap.de Web Vektor.
+Park and amenity data: Land Berlin WFS services (dl-de-zero-2.0) and Stadt Wien
+WFS services (CC BY 4.0).
+Population: EC JRC 2021 100 m census grid. Walking network: OpenStreetMap.
+Background maps: basemap.de and basemap.at.
 Project code: MIT.

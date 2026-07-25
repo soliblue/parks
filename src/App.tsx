@@ -8,6 +8,7 @@ import {
 } from 'react'
 import { InfoPanel } from './components/InfoPanel'
 import { useParksData } from './hooks/useParksData'
+import type { CityId } from './lib/cities'
 import {
   filterParks,
   sortByDistance,
@@ -23,7 +24,8 @@ const ParkMap = lazy(async () => {
 
 export function App() {
   const initialState = useMemo(() => readUrlState(), [])
-  const { data, loading, warning } = useParksData()
+  const [cityId, setCityId] = useState<CityId>(initialState.cityId)
+  const { cities, city, data, loading, warning } = useParksData(cityId)
   const [query, setQuery] = useState(initialState.query)
   const deferredQuery = useDeferredValue(query)
   const [amenities, setAmenities] = useState<AmenityKey[]>(
@@ -80,12 +82,17 @@ export function App() {
 
   useEffect(() => {
     writeUrlState({
+      cityId,
       query,
       amenities,
       origin,
       selectedParkId,
     })
-  }, [amenities, origin, query, selectedParkId])
+  }, [amenities, cityId, origin, query, selectedParkId])
+
+  useEffect(() => {
+    document.title = `${city.name} · Parks & Stadtgrün`
+  }, [city.name])
 
   useEffect(() => {
     if (
@@ -112,6 +119,16 @@ export function App() {
     )
   }
 
+  const selectCity = (nextCityId: CityId) => {
+    if (nextCityId === cityId) return
+    setCityId(nextCityId)
+    setQuery('')
+    setAmenities([])
+    setOrigin(null)
+    setSelectedParkId(null)
+    setLocationMessage(null)
+  }
+
   return (
     <main
       className={`app-shell${panelOpen ? '' : ' panel-collapsed'}`}
@@ -119,6 +136,8 @@ export function App() {
       <div className="information-panel-shell" data-testid="bottom-sheet">
         <InfoPanel
           amenities={amenities}
+          cities={cities}
+          city={city}
           loading={loading}
           locationMessage={locationMessage}
           nearbyParks={nearbyParks}
@@ -128,6 +147,7 @@ export function App() {
           summary={data.summary}
           warning={warning}
           onAmenityToggle={toggleAmenity}
+          onCitySelect={selectCity}
           onParkSelect={setSelectedParkId}
           onQueryChange={setQuery}
         />
@@ -135,7 +155,7 @@ export function App() {
       <Suspense
         fallback={
           <section
-            aria-label="Karte der Berliner Parks"
+            aria-label={`Karte der Parks in ${city.name}`}
             className="map-shell map-loading"
             data-testid="park-map"
           >
@@ -144,12 +164,28 @@ export function App() {
         }
       >
         <ParkMap
+          basemapStyle={city.basemapStyle}
+          center={city.center}
+          cityName={city.name}
           geojson={data.geojson}
+          mapCredit={
+            <>
+              {city.mapAttribution} ·{' '}
+              <a
+                href={city.mapSourceUrl}
+                rel="noreferrer"
+                target="_blank"
+              >
+                {city.mapSourceLabel}
+              </a>
+            </>
+          }
           origin={origin}
           panelOpen={panelOpen}
           parks={data.parks}
           selectedParkId={selectedParkId}
           visibleParkIds={visibleParkIds}
+          zoom={city.zoom}
           onLocationMessage={setLocationMessage}
           onOriginChange={setOrigin}
           onPanelToggle={() => setPanelOpen((current) => !current)}

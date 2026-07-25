@@ -3,8 +3,8 @@ import { expect } from '@playwright/test'
 
 export const appHeading = (page: Page) =>
   page
-    .getByRole('heading', { name: 'Parkblick', exact: true })
-    .or(page.getByText('Parkblick', { exact: true }))
+    .getByRole('heading', { name: 'Städte vergleichen', exact: true })
+    .or(page.getByText('Parks & Stadtgrün', { exact: true }))
     .first()
 
 export const informationRail = (page: Page) =>

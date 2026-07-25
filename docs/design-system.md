@@ -1,9 +1,9 @@
-# Parkblick design system
+# Parks design system
 
 Concepts:
 
-- `design/parkblick-desktop-concept.png`
-- `design/parkblick-mobile-concept.png`
+- `design/parks-desktop-concept.png`
+- `design/parks-mobile-concept.png`
 
 The desktop surface is a 380px information rail beside a full-height rounded map. Mobile is a full-bleed map above a rounded bottom sheet.
 
@@ -25,7 +25,7 @@ The desktop surface is a 380px information rail beside a full-height rounded map
 
 ## Locked first-viewport copy
 
-- Parkblick
+- Parks
 - Berlin im Überblick
 - 5.889 Hektar öffentliches Grün
 - 2.563 Grünanlagen

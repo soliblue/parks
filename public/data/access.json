@@ -1,0 +1,162 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-07-25T12:42:15Z",
+  "methodology": {
+    "metric": "Share of resident population whose 100 m population-cell centre can reach an eligible public green-space access point within 805 m on the pedestrian network.",
+    "numerator": "JRC-ESTAT 2021 resident population in cells with snapped pedestrian-network distance to an eligible park of at most 805 m.",
+    "denominator": "All positive JRC-ESTAT 2021 population cells whose centres fall inside the official city boundary.",
+    "parkEligibility": "Official city public-green polygons clipped to the city boundary and measuring at least 0.5 ha in EPSG:3035.",
+    "entranceModel": "Mapped pedestrian nodes inside parks and network edges crossing park boundaries are primary access. Mapped OSM entrances within 30 m are also accepted. A park without those signals receives a generated nearest-perimeter access only when a pedestrian node is within 61 m; otherwise it is excluded from routed access.",
+    "walkingStandard": "805 m (one half-mile) pedestrian-network distance is used as the conventional 10-minute-walk proxy; it is not a personalized travel-time prediction.",
+    "populationSnap": "Each populated cell centre is connected to the best of its three nearest pedestrian nodes within 200 m, including the straight connector distance.",
+    "uncertainty": "Population is a 2021 dasymetric model, park inventories differ by city, and OSM access/barrier tags can be incomplete. Results are comparative planning estimates, not accessibility guarantees."
+  },
+  "sources": [
+    {
+      "id": "jrc-estat-population-2021-100m",
+      "title": "JRC-ESTAT Census Population Grid 2021 (100 m)",
+      "role": "population",
+      "url": "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/MAPS/JRC-ESTAT_Census_Population_2021_100m/JRC-ESTAT_Census_Population_2021_100m.zip",
+      "license": "European Commission reuse notice",
+      "metadataUrl": "https://data.jrc.ec.europa.eu/dataset/98336641-fd1c-4992-8c7b-c470dd5eb81e",
+      "sha256": "1e687070bde7485f504ed252d2d8a1c24c0989e425cb05b598939800668d72d9",
+      "lastModified": "2026-07-24T07:43:47Z"
+    },
+    {
+      "id": "berlin-parks",
+      "title": "Official public green-space inventory — Berlin",
+      "role": "parks",
+      "url": "public/data/berlin/parks.geojson",
+      "license": "See the city-specific generated source manifest",
+      "city": "berlin",
+      "sha256": "4e7be07f4a9238540a20d0a1e4215340babb58f79fe51113779b214ca8769afa",
+      "generatedAt": "2026-07-25T12:34:14.253Z"
+    },
+    {
+      "id": "berlin-boundary",
+      "title": "ALKIS Berlin Landesgrenze",
+      "role": "city-boundary",
+      "url": "https://gdi.berlin.de/services/wfs/alkis_land?service=WFS&version=2.0.0&request=GetFeature&typeNames=alkis_land:landesgrenze&srsName=EPSG:4326&outputFormat=application/json",
+      "license": "Datenlizenz Deutschland – Zero – Version 2.0",
+      "metadataUrl": "https://daten.berlin.de/datensaetze/alkis-berlin-landesgrenze-wfs-07b1347b",
+      "city": "berlin",
+      "sha256": "2121ea59cbbd93f581eb3a3188589aa21ef941ab34d8c4ff3f6ed9e512054b1c",
+      "lastModified": null
+    },
+    {
+      "id": "berlin-pedestrian-network",
+      "title": "Geofabrik OpenStreetMap extract — Berlin",
+      "role": "pedestrian-network",
+      "url": "https://download.geofabrik.de/europe/germany/berlin-latest.osm.pbf",
+      "license": "Open Data Commons Open Database License 1.0",
+      "metadataUrl": "https://www.openstreetmap.org/copyright",
+      "city": "berlin",
+      "sha256": "fd03e4a9f31207b4f1ad2c11d66b2bebbd1f2f3089808396788607712962990e",
+      "lastModified": "2026-07-25T00:49:04Z"
+    },
+    {
+      "id": "vienna-parks",
+      "title": "Official public green-space inventory — Wien",
+      "role": "parks",
+      "url": "public/data/vienna/parks.geojson",
+      "license": "See the city-specific generated source manifest",
+      "city": "vienna",
+      "sha256": "3813a2afc3b257055cb695671f87414036f8ac34223c09d41b0e9be3ad769e1d",
+      "generatedAt": "2026-07-25T12:34:21.482Z"
+    },
+    {
+      "id": "vienna-boundary",
+      "title": "Landesgrenze Wien",
+      "role": "city-boundary",
+      "url": "https://data.wien.gv.at/daten/geo?service=WFS&version=1.1.0&request=GetFeature&typeName=ogdwien:LANDESGRENZEOGD&srsName=EPSG:4326&outputFormat=json",
+      "license": "Creative Commons Namensnennung 4.0 – Stadt Wien",
+      "metadataUrl": "https://www.data.gv.at/katalog/dataset/stadt-wien_landesgrenzewien",
+      "city": "vienna",
+      "sha256": "8182cce60c5d54b0f5d27967f942ce20ee1b03da11a2a9c8692c1a456c35a472",
+      "lastModified": null
+    },
+    {
+      "id": "vienna-pedestrian-network",
+      "title": "BBBike OpenStreetMap extract — Wien",
+      "role": "pedestrian-network",
+      "url": "https://download.bbbike.org/osm/bbbike/Wien/Wien.osm.pbf",
+      "license": "Open Data Commons Open Database License 1.0",
+      "metadataUrl": "https://www.openstreetmap.org/copyright",
+      "city": "vienna",
+      "sha256": "6b1e280be6b8511d91192c3983a1e655400b821af0f2a9ddf850818d05e63fc1",
+      "lastModified": "2026-07-18T16:38:27Z"
+    }
+  ],
+  "cities": {
+    "berlin": {
+      "sharePercent": 92.6,
+      "populationWithinThreshold": 3288999,
+      "populationTotal": 3551062,
+      "populationYear": 2021,
+      "thresholdMinutes": 10,
+      "thresholdMeters": 805,
+      "method": "walking-network",
+      "generatedAt": "2026-07-25T12:42:15Z",
+      "note": "Modellschätzung auf Basis des Zensusrasters 2021 und des OpenStreetMap-Fußwegenetzes; keine individuelle Erreichbarkeitsgarantie.",
+      "guardrails": {
+        "populationGridResolutionMeters": 100,
+        "populationModel": "2021 census counts dasymetrically allocated to 100 m cells",
+        "minimumEligibleParkAreaHa": 0.5,
+        "maximumPopulationNetworkSnapMeters": 200,
+        "parkInputFeatureCount": 2563,
+        "parksBelowMinimumArea": 1234,
+        "parksWithInvalidOrEmptyGeometry": 0,
+        "networkNodeCount": 1103187,
+        "networkDirectedEdgeCount": 2506806,
+        "eligibleParkCount": 1329,
+        "parksWithInternalPedestrianNetwork": 1249,
+        "parksWithBoundaryNetworkIntersection": 34,
+        "parksUsingMappedEntrance": 8,
+        "parksUsingPerimeterFallback": 37,
+        "parksWithoutNetworkAccess": 1,
+        "internalNetworkNodeCount": 81400,
+        "boundaryCrossingNodeCount": 13518,
+        "mappedEntranceNodeCount": 3119,
+        "populationGridCellCount": 50073,
+        "populationGridCellsSnappedToNetwork": 50044,
+        "populationGridCellsBeyondSnapLimit": 29,
+        "populationBeyondSnapLimit": 178
+      }
+    },
+    "vienna": {
+      "sharePercent": 97.6,
+      "populationWithinThreshold": 1877897,
+      "populationTotal": 1924851,
+      "populationYear": 2021,
+      "thresholdMinutes": 10,
+      "thresholdMeters": 805,
+      "method": "walking-network",
+      "generatedAt": "2026-07-25T12:42:15Z",
+      "note": "Modellschätzung auf Basis des Zensusrasters 2021 und des OpenStreetMap-Fußwegenetzes; keine individuelle Erreichbarkeitsgarantie.",
+      "guardrails": {
+        "populationGridResolutionMeters": 100,
+        "populationModel": "2021 census counts dasymetrically allocated to 100 m cells",
+        "minimumEligibleParkAreaHa": 0.5,
+        "maximumPopulationNetworkSnapMeters": 200,
+        "parkInputFeatureCount": 1836,
+        "parksBelowMinimumArea": 922,
+        "parksWithInvalidOrEmptyGeometry": 0,
+        "networkNodeCount": 622456,
+        "networkDirectedEdgeCount": 1410992,
+        "eligibleParkCount": 914,
+        "parksWithInternalPedestrianNetwork": 833,
+        "parksWithBoundaryNetworkIntersection": 31,
+        "parksUsingMappedEntrance": 3,
+        "parksUsingPerimeterFallback": 44,
+        "parksWithoutNetworkAccess": 3,
+        "internalNetworkNodeCount": 92846,
+        "boundaryCrossingNodeCount": 7098,
+        "mappedEntranceNodeCount": 1837,
+        "populationGridCellCount": 21014,
+        "populationGridCellsSnappedToNetwork": 20988,
+        "populationGridCellsBeyondSnapLimit": 26,
+        "populationBeyondSnapLimit": 188
+      }
+    }
+  }
+}

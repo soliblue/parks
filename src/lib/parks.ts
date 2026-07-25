@@ -63,11 +63,11 @@ export interface ParkData {
 }
 
 const FALLBACK_SUMMARY: ParkSummary = {
-  parkCount: 2563,
-  totalAreaM2: 58_890_000,
-  districtCount: 12,
+  parkCount: 0,
+  totalAreaM2: 0,
+  districtCount: 0,
   generatedAt: null,
-  sourceUpdatedAt: '2026-04-09',
+  sourceUpdatedAt: null,
 }
 
 const EMPTY_AMENITIES: ParkAmenities = {
@@ -616,7 +616,7 @@ export const formatDistance = (distanceKm: number): string =>
         }).format(distanceKm)} km`
 
 export const formatSourceDate = (value: string | null): string => {
-  if (!value) return '9. April 2026'
+  if (!value) return 'unbekannt'
   const date = new Date(value)
   if (Number.isNaN(date.valueOf())) return value
   return new Intl.DateTimeFormat('de-DE', {

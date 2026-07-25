@@ -7,3 +7,6 @@ test-results/
 .env.*
 !.env.example
 public/data/*.tmp
+/scripts/access/.cache/
+/scripts/access/.venv/
+/scripts/access/__pycache__/

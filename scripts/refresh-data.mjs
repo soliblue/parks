@@ -1,38 +1,58 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  readFile,
+  rename,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  CITY_CONFIG,
   COORDINATE_PRECISION,
   DATA_SCHEMA_VERSION,
   JOIN_THRESHOLD_METERS,
-  LICENSE,
   SIMPLIFY_TOLERANCE_METERS,
-  SOURCE_CONFIG,
   buildWfsUrl,
 } from "./data-sources.mjs";
 import {
   boundsCouldBeWithin,
+  canonicalizeGeometry,
   combinePolygonGeometries,
   geometryBounds,
   geometryCentroid,
   geometryDistanceMeters,
   normalizeGeometry,
+  pointInGeometry,
 } from "./geo.mjs";
 
 const PROJECT_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const OUTPUT_DIRECTORY = join(PROJECT_ROOT, "public", "data");
-const OUTPUT_FILES = {
-  parks: join(OUTPUT_DIRECTORY, "parks.geojson"),
-  index: join(OUTPUT_DIRECTORY, "parks-index.json"),
-  summary: join(OUTPUT_DIRECTORY, "summary.json"),
-  sources: join(OUTPUT_DIRECTORY, "sources.json"),
+const OUTPUT_NAMES = {
+  parks: "parks.geojson",
+  index: "parks-index.json",
+  summary: "summary.json",
+  sources: "sources.json",
 };
 const VOLATILE_KEYS = new Set([
   "generatedAt",
   "retrievedAt",
   "responseTimestamp",
 ]);
+const VOLATILE_SOURCE_PROPERTY_KEYS = new Set(["SE_ANNO_CAD_DATA"]);
+
+function outputFiles(cityId, rootFallback = false) {
+  const directory = rootFallback
+    ? OUTPUT_DIRECTORY
+    : join(OUTPUT_DIRECTORY, cityId);
+  return Object.fromEntries(
+    Object.entries(OUTPUT_NAMES).map(([key, name]) => [
+      key,
+      join(directory, name),
+    ]),
+  );
+}
 
 function canonicalize(value) {
   if (Array.isArray(value)) return value.map(canonicalize);
@@ -81,9 +101,12 @@ function sourceFingerprint(source, features) {
     .map((feature) => ({
       stableId: sourceFeatureId(source, feature),
       value: canonicalJson({
-        id: feature.id ?? null,
-        geometry: feature.geometry,
-        properties: feature.properties,
+        geometry: canonicalizeGeometry(feature.geometry),
+        properties: Object.fromEntries(
+          Object.entries(feature.properties).filter(
+            ([key]) => !VOLATILE_SOURCE_PROPERTY_KEYS.has(key),
+          ),
+        ),
       }),
     }))
     .sort(
@@ -101,7 +124,7 @@ function sourceFingerprint(source, features) {
   return hash.digest("hex");
 }
 
-function validateCoordinates(value, sourceId) {
+function validateCoordinates(value, sourceId, coordinateBounds) {
   if (
     Array.isArray(value) &&
     value.length >= 2 &&
@@ -109,16 +132,17 @@ function validateCoordinates(value, sourceId) {
     typeof value[1] === "number"
   ) {
     const [longitude, latitude] = value;
+    const [west, south, east, north] = coordinateBounds;
     if (
       !Number.isFinite(longitude) ||
       !Number.isFinite(latitude) ||
-      longitude < 12 ||
-      longitude > 15 ||
-      latitude < 51 ||
-      latitude > 54
+      longitude < west ||
+      longitude > east ||
+      latitude < south ||
+      latitude > north
     ) {
       throw new Error(
-        `${sourceId}: coordinate is outside the expected Berlin region: ${longitude},${latitude}`,
+        `${sourceId}: coordinate is outside the expected city region: ${longitude},${latitude}`,
       );
     }
     return;
@@ -126,30 +150,38 @@ function validateCoordinates(value, sourceId) {
   if (!Array.isArray(value)) {
     throw new Error(`${sourceId}: malformed coordinate array`);
   }
-  value.forEach((nested) => validateCoordinates(nested, sourceId));
+  value.forEach((nested) =>
+    validateCoordinates(nested, sourceId, coordinateBounds),
+  );
 }
 
-function validateFeature(source, feature, index) {
+function validateFeature(city, source, feature, index) {
   if (feature?.type !== "Feature") {
-    throw new Error(`${source.id}: item ${index} is not a GeoJSON Feature`);
+    throw new Error(`${city.id}/${source.id}: item ${index} is not a Feature`);
   }
   if (!source.geometryTypes.includes(feature.geometry?.type)) {
     throw new Error(
-      `${source.id}: item ${index} has unexpected geometry ${feature.geometry?.type}`,
+      `${city.id}/${source.id}: item ${index} has unexpected geometry ${feature.geometry?.type}`,
     );
   }
   if (!feature.properties || typeof feature.properties !== "object") {
-    throw new Error(`${source.id}: item ${index} has no properties object`);
+    throw new Error(
+      `${city.id}/${source.id}: item ${index} has no properties object`,
+    );
   }
   for (const property of source.requiredProperties) {
     if (!Object.hasOwn(feature.properties, property)) {
       throw new Error(
-        `${source.id}: item ${index} is missing required property ${property}`,
+        `${city.id}/${source.id}: item ${index} is missing required property ${property}`,
       );
     }
   }
   sourceFeatureId(source, feature);
-  validateCoordinates(feature.geometry.coordinates, source.id);
+  validateCoordinates(
+    feature.geometry.coordinates,
+    `${city.id}/${source.id}`,
+    city.coordinateBounds,
+  );
 }
 
 function previousSourceCount(previousSources, sourceId) {
@@ -161,33 +193,32 @@ function previousSourceCount(previousSources, sourceId) {
     : null;
 }
 
-function validateFeatureCount(source, count, previousSources) {
+function validateFeatureCount(source, count, previousSources, cityId) {
   if (count < source.minimumCount) {
     throw new Error(
-      `${source.id}: received ${count} features, below hard minimum ${source.minimumCount}`,
+      `${cityId}/${source.id}: received ${count} features, below hard minimum ${source.minimumCount}`,
     );
   }
-
-  const previousCount = previousSourceCount(previousSources, source.id);
-  const comparisonCount = previousCount ?? source.baselineCount;
+  const comparisonCount =
+    previousSourceCount(previousSources, source.id) ?? source.baselineCount;
   const minimumFromComparison = Math.floor(
     comparisonCount * (1 - source.maximumDropFraction),
   );
   if (count < minimumFromComparison) {
     throw new Error(
-      `${source.id}: implausible count drop from ${comparisonCount} to ${count} (guard ${Math.round(source.maximumDropFraction * 100)}%)`,
+      `${cityId}/${source.id}: implausible count drop from ${comparisonCount} to ${count} (guard ${Math.round(source.maximumDropFraction * 100)}%)`,
     );
   }
 }
 
-async function fetchJsonWithRetries(url, sourceId) {
+async function fetchJsonWithRetries(url, label) {
   let lastError;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
       const response = await fetch(url, {
         headers: {
           Accept: "application/geo+json, application/json",
-          "User-Agent": "Parkblick data refresh (parks.soli.blue)",
+          "User-Agent": "parks.soli.blue data refresh",
         },
         signal: AbortSignal.timeout(60_000),
       });
@@ -206,39 +237,38 @@ async function fetchJsonWithRetries(url, sourceId) {
       }
     }
   }
-  throw new Error(`${sourceId}: WFS fetch failed after 3 attempts: ${lastError}`);
+  throw new Error(`${label}: WFS fetch failed after 3 attempts: ${lastError}`);
 }
 
-async function readPreviousSources() {
-  try {
-    return JSON.parse(await readFile(OUTPUT_FILES.sources, "utf8"));
-  } catch {
-    return null;
-  }
-}
-
-async function fetchSource(source, previousSources) {
-  const requestUrl = buildWfsUrl(source);
+async function fetchSource(city, source, previousSources) {
+  const requestUrl = buildWfsUrl(city, source);
   const retrievedAt = new Date().toISOString();
-  const data = await fetchJsonWithRetries(requestUrl, source.id);
+  const data = await fetchJsonWithRetries(
+    requestUrl,
+    `${city.id}/${source.id}`,
+  );
   if (data?.type !== "FeatureCollection" || !Array.isArray(data.features)) {
-    throw new Error(`${source.id}: response is not a GeoJSON FeatureCollection`);
+    throw new Error(
+      `${city.id}/${source.id}: response is not a FeatureCollection`,
+    );
   }
-
   const reportedCount = Number(
     data.numberMatched ?? data.totalFeatures ?? data.features.length,
   );
   if (Number.isFinite(reportedCount) && reportedCount !== data.features.length) {
     throw new Error(
-      `${source.id}: response is truncated (${data.features.length} of ${reportedCount})`,
+      `${city.id}/${source.id}: response is truncated (${data.features.length} of ${reportedCount})`,
     );
   }
-
-  validateFeatureCount(source, data.features.length, previousSources);
-  data.features.forEach((feature, index) =>
-    validateFeature(source, feature, index),
+  validateFeatureCount(
+    source,
+    data.features.length,
+    previousSources,
+    city.id,
   );
-
+  data.features.forEach((feature, index) =>
+    validateFeature(city, source, feature, index),
+  );
   return {
     source,
     data,
@@ -274,23 +304,22 @@ function designationStatus(value) {
   return null;
 }
 
-function normalizeParkGroup(features, id) {
-  const first = features[0];
-  const properties = first.properties;
-  const geometries = features.map((feature) =>
-    normalizeGeometry(
-      feature.geometry,
-      SIMPLIFY_TOLERANCE_METERS,
-      COORDINATE_PRECISION,
+function normalizeBerlinParkGroup(features, id) {
+  const properties = features[0].properties;
+  const geometry = combinePolygonGeometries(
+    features.map((feature) =>
+      normalizeGeometry(
+        feature.geometry,
+        SIMPLIFY_TOLERANCE_METERS,
+        COORDINATE_PRECISION,
+      ),
     ),
   );
-  const geometry = combinePolygonGeometries(geometries);
   const area = Number(properties.katasterfl);
   const areaM2 = Number.isFinite(area) && area >= 0 ? round(area, 1) : null;
   const officialName = cleanText(properties.namenr);
   const objectNumber = cleanText(properties.kennzeich);
   const designation = cleanText(properties.widmung);
-
   return {
     type: "Feature",
     id,
@@ -321,7 +350,7 @@ function normalizeParkGroup(features, id) {
   };
 }
 
-function normalizeParks(sourceResult) {
+function normalizeBerlinParks(sourceResult) {
   const groups = new Map();
   for (const feature of sourceResult.data.features) {
     const id = sourceFeatureId(sourceResult.source, feature);
@@ -331,7 +360,87 @@ function normalizeParks(sourceResult) {
   }
   return [...groups.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
-    .map(([id, features]) => normalizeParkGroup(features, id));
+    .map(([id, features]) => normalizeBerlinParkGroup(features, id));
+}
+
+function normalizeViennaDistricts(sourceResult) {
+  return sourceResult.data.features
+    .map((feature) => ({
+      number: Number(feature.properties.BEZNR),
+      name:
+        cleanText(feature.properties.NAMEK) ??
+        `Bezirk ${feature.properties.BEZNR}`,
+      geometry: feature.geometry,
+      bounds: geometryBounds(feature.geometry),
+    }))
+    .sort((left, right) => left.number - right.number);
+}
+
+function districtForPoint(point, districts) {
+  return (
+    districts.find(
+      (district) =>
+        point[0] >= district.bounds[0] &&
+        point[0] <= district.bounds[2] &&
+        point[1] >= district.bounds[1] &&
+        point[1] <= district.bounds[3] &&
+        pointInGeometry(point, district.geometry),
+    ) ?? null
+  );
+}
+
+function normalizeViennaParks(sourceResult, districtResult) {
+  const districts = normalizeViennaDistricts(districtResult);
+  return sourceResult.data.features
+    .map((feature) => {
+      const properties = feature.properties;
+      const sourceId = sourceFeatureId(sourceResult.source, feature);
+      const id = `wien:${sourceId}`;
+      const geometry = canonicalizeGeometry(
+        normalizeGeometry(
+          feature.geometry,
+          SIMPLIFY_TOLERANCE_METERS,
+          COORDINATE_PRECISION,
+        ),
+      );
+      const area = Number(properties.FLAECHE);
+      const areaM2 =
+        Number.isFinite(area) && area >= 0 ? round(area, 1) : null;
+      const centroid = geometryCentroid(geometry);
+      const district = districtForPoint(centroid, districts);
+      if (!district) return null;
+      return {
+        type: "Feature",
+        id,
+        geometry,
+        properties: {
+          id,
+          name:
+            cleanText(properties.T_LANG) ??
+            cleanText(properties.T_TEXT) ??
+            `Grünfläche ${sourceId}`,
+          nameAddon: null,
+          objectNumber: sourceId,
+          district: district.name,
+          locality: null,
+          type: "Öffentliche Grünfläche",
+          areaM2,
+          areaHa: areaM2 === null ? null : round(areaM2 / 10_000, 2),
+          designation: null,
+          dedicated: null,
+          builtYear: null,
+          renovatedYear: null,
+          planningAreaId: null,
+          planningAreaName: null,
+          centroid,
+          bounds: geometryBounds(geometry),
+          amenities: null,
+          sourceId: "parks",
+        },
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function normalizeAmenitySource(sourceResult) {
@@ -355,7 +464,6 @@ function normalizeAmenitySource(sourceResult) {
     );
     groups.set(sourceId, group);
   }
-
   return [...groups.values()]
     .sort((left, right) => left.sourceId.localeCompare(right.sourceId))
     .map((amenity) => {
@@ -375,19 +483,16 @@ function normalizeAmenitySource(sourceResult) {
 function amenityObservation(park, amenities, coverage) {
   let count = 0;
   let nearestMeters = Infinity;
-  const parkBounds = park.properties.bounds;
-
   for (const amenity of amenities) {
     if (
       !boundsCouldBeWithin(
-        parkBounds,
+        park.properties.bounds,
         amenity.bounds,
         JOIN_THRESHOLD_METERS,
       )
     ) {
       continue;
     }
-
     let distance = Infinity;
     for (const geometry of amenity.geometries) {
       distance = Math.min(
@@ -396,13 +501,11 @@ function amenityObservation(park, amenities, coverage) {
       );
       if (distance === 0) break;
     }
-
     if (distance <= JOIN_THRESHOLD_METERS) {
       count += 1;
       nearestMeters = Math.min(nearestMeters, distance);
     }
   }
-
   return {
     status: count > 0 ? "observed-nearby" : "not-observed",
     count,
@@ -414,31 +517,26 @@ function amenityObservation(park, amenities, coverage) {
   };
 }
 
-function attachAmenities(parks, amenitiesByKind, coverageByKind) {
+function attachAmenities(parks, amenityResults) {
+  const amenitiesByKind = Object.fromEntries(
+    amenityResults.map((result) => [
+      result.source.kind,
+      normalizeAmenitySource(result),
+    ]),
+  );
   for (const park of parks) {
-    park.properties.amenities = {
-      playground: amenityObservation(
-        park,
-        amenitiesByKind.playground,
-        coverageByKind.playground,
-      ),
-      toilet: amenityObservation(
-        park,
-        amenitiesByKind.toilet,
-        coverageByKind.toilet,
-      ),
-      drinkingFountain: amenityObservation(
-        park,
-        amenitiesByKind.drinkingFountain,
-        coverageByKind.drinkingFountain,
-      ),
-      dogRun: amenityObservation(
-        park,
-        amenitiesByKind.dogRun,
-        coverageByKind.dogRun,
-      ),
-    };
+    park.properties.amenities = Object.fromEntries(
+      amenityResults.map((result) => [
+        result.source.kind,
+        amenityObservation(
+          park,
+          amenitiesByKind[result.source.kind],
+          result.source.coverage,
+        ),
+      ]),
+    );
   }
+  return amenitiesByKind;
 }
 
 function buildDistrictSummary(parks) {
@@ -463,48 +561,51 @@ function buildDistrictSummary(parks) {
     .sort((left, right) => left.name.localeCompare(right.name, "de"));
 }
 
-function buildAmenitySummary(parks, sourceResult, normalizedAmenities) {
-  const kind = sourceResult.source.kind;
-  const parksWithObservation = parks.filter(
-    (park) =>
-      park.properties.amenities[kind].status === "observed-nearby",
-  ).length;
+function normalizedEntityCount(result, parks, amenitiesByKind) {
+  if (result.source.role === "park") return parks.length;
+  if (result.source.role === "amenity") {
+    return amenitiesByKind[result.source.kind].length;
+  }
+  return new Set(
+    result.data.features.map((feature) =>
+      sourceFeatureId(result.source, feature),
+    ),
+  ).size;
+}
+
+function buildAmenitySummary(parks, result, normalizedAmenities) {
+  const { kind } = result.source;
   return {
-    sourceFeatureCount: sourceResult.data.features.length,
+    sourceFeatureCount: result.data.features.length,
     entityCount: normalizedAmenities.length,
-    parksWithObservation,
-    coverage: sourceResult.source.coverage,
+    parksWithObservation: parks.filter(
+      (park) =>
+        park.properties.amenities[kind].status === "observed-nearby",
+    ).length,
+    coverage: result.source.coverage,
   };
 }
 
-function buildOutputs(sourceResults, generatedAt) {
+function buildOutputs(city, sourceResults, generatedAt) {
   const sourceById = Object.fromEntries(
     sourceResults.map((result) => [result.source.id, result]),
   );
-  const parks = normalizeParks(sourceById.parks);
+  const parkResult = sourceById.parks;
+  const parks =
+    city.id === "berlin"
+      ? normalizeBerlinParks(parkResult)
+      : normalizeViennaParks(parkResult, sourceById.districts);
   const amenityResults = sourceResults.filter(
-    (result) => result.source.kind !== "park",
+    (result) => result.source.role === "amenity",
   );
-  const amenitiesByKind = Object.fromEntries(
-    amenityResults.map((result) => [
-      result.source.kind,
-      normalizeAmenitySource(result),
-    ]),
-  );
-  const coverageByKind = Object.fromEntries(
-    amenityResults.map((result) => [
-      result.source.kind,
-      result.source.coverage,
-    ]),
-  );
-  attachAmenities(parks, amenitiesByKind, coverageByKind);
-
+  const amenitiesByKind = attachAmenities(parks, amenityResults);
   const sourceRecords = sourceResults.map((result) => ({
     id: result.source.id,
     kind: result.source.kind,
+    role: result.source.role,
     title: result.source.title,
-    publisher: "Land Berlin",
-    service: result.source.service,
+    publisher: city.publisher,
+    ...(result.source.service ? { service: result.source.service } : {}),
     layer: result.source.layer,
     requestUrl: result.requestUrl,
     metadataUrl: result.source.metadataUrl,
@@ -513,15 +614,16 @@ function buildOutputs(sourceResults, generatedAt) {
       : {}),
     geometryTypes: result.source.geometryTypes,
     featureCount: result.data.features.length,
-    normalizedEntityCount:
-      result.source.kind === "park"
-        ? parks.length
-        : amenitiesByKind[result.source.kind].length,
+    normalizedEntityCount: normalizedEntityCount(
+      result,
+      parks,
+      amenitiesByKind,
+    ),
     contentFingerprint: result.fingerprint,
     responseTimestamp: result.data.timeStamp ?? null,
     retrievedAt: result.retrievedAt,
     dataAsOf: result.source.dataAsOf ?? null,
-    license: LICENSE,
+    license: city.license,
     coverage: result.source.coverage,
     coverageNote: result.source.coverageNote,
   }));
@@ -536,13 +638,19 @@ function buildOutputs(sourceResults, generatedAt) {
     0,
   );
   const districts = buildDistrictSummary(parks);
-  const parkSource = sourceById.parks.source;
+  const excludedOutsideCityCount =
+    city.id === "vienna"
+      ? parkResult.data.features.length - parks.length
+      : 0;
+  const catalogParkCount =
+    sourceById["park-catalog"]?.data.features.length ?? null;
+  const publicGreenSpaceCount = parks.length;
 
   const geojson = {
     type: "FeatureCollection",
     schemaVersion: DATA_SCHEMA_VERSION,
     generatedAt,
-    dataAsOf: parkSource.dataAsOf,
+    dataAsOf: parkResult.source.dataAsOf ?? null,
     sourceId: "parks",
     features: parks,
   };
@@ -565,15 +673,18 @@ function buildOutputs(sourceResults, generatedAt) {
   };
   const summary = {
     schemaVersion: DATA_SCHEMA_VERSION,
-    city: "Berlin",
-    country: "DE",
+    city: city.name,
+    country: city.country,
     generatedAt,
-    dataAsOf: parkSource.dataAsOf,
+    dataAsOf: parkResult.source.dataAsOf ?? null,
     parkCount: parks.length,
-    sourceParkFeatureCount: sourceById.parks.data.features.length,
+    publicGreenSpaceCount,
+    catalogParkCount,
+    sourceParkFeatureCount: parkResult.data.features.length,
     totalAreaM2: round(totalAreaM2, 1),
     totalAreaHa: round(totalAreaM2 / 10_000, 1),
     districtCount: districts.length,
+    excludedOutsideCityCount,
     districts,
     amenities: Object.fromEntries(
       amenityResults.map((result) => [
@@ -590,34 +701,45 @@ function buildOutputs(sourceResults, generatedAt) {
     schemaVersion: DATA_SCHEMA_VERSION,
     generatedAt,
     upstreamFingerprint,
-    publisher: "Land Berlin",
-    license: LICENSE,
+    publisher: city.publisher,
+    excludedOutsideCityCount,
+    ...(city.attribution ? { attribution: city.attribution } : {}),
+    license: city.license,
     methodology: {
-      canonicalParkId: "pitid",
+      canonicalParkId: city.canonicalParkId,
       coordinateReferenceSystem: "EPSG:4326",
       coordinatePrecision: COORDINATE_PRECISION,
       polygonSimplificationToleranceMeters: SIMPLIFY_TOLERANCE_METERS,
       amenityJoinThresholdMeters: JOIN_THRESHOLD_METERS,
       amenityJoin:
-        "Polygon-aware intersection or nearest-boundary distance. One official entity may match more than one adjacent park.",
+        "Polygon-aware intersection or nearest-boundary distance. One official entity may match more than one adjacent green space.",
       duplicateHandling:
         "Features sharing a source identifier are treated as one entity; polygon fragments are combined before matching.",
       areaCalculation:
-        "Park and district totals sum the official katasterfl field, not the simplified browser geometry.",
+        city.id === "berlin"
+          ? "Park and district totals sum the official katasterfl field, not the simplified browser geometry."
+          : "Green-space and district totals sum the official FLAECHE field, not the simplified browser geometry.",
+      ...(city.id === "vienna"
+        ? {
+            districtAssignment:
+              "Each mapped green-space centroid is assigned by point-in-polygon against the official BEZIRKSGRENZEOGD boundaries. Source polygons whose centroid is outside all 23 boundaries are excluded from city metrics and reported as excludedOutsideCityCount.",
+            inventoryDistinction:
+              "OEFFGRUENFLOGD polygons are the mapped public-green inventory. PARKINFOOGD is a separate park catalogue and is reported as context, not substituted for polygon features.",
+          }
+        : {}),
       absenceSemantics:
-        "not-observed means no source entity was matched within the threshold. It is not an authoritative claim of absence; dog-run coverage is explicitly partial.",
+        "not-observed means no source entity was matched within the threshold. It is not an authoritative claim of absence; source coverage notes remain controlling.",
     },
     sources: sourceRecords,
   };
-
   return { parks: geojson, index, summary, sources };
 }
 
-async function readExistingOutputs() {
+async function readOutputSet(paths) {
   try {
     return Object.fromEntries(
       await Promise.all(
-        Object.entries(OUTPUT_FILES).map(async ([key, path]) => [
+        Object.entries(paths).map(async ([key, path]) => [
           key,
           JSON.parse(await readFile(path, "utf8")),
         ]),
@@ -628,9 +750,19 @@ async function readExistingOutputs() {
   }
 }
 
+async function readExistingOutputs(city) {
+  const current = await readOutputSet(outputFiles(city.id));
+  if (current) return { outputs: current, migrated: true };
+  if (city.id === "berlin") {
+    const legacy = await readOutputSet(outputFiles(city.id, true));
+    if (legacy) return { outputs: legacy, migrated: false };
+  }
+  return { outputs: null, migrated: false };
+}
+
 function outputsAreEquivalent(previous, next) {
   if (!previous) return false;
-  return Object.keys(OUTPUT_FILES).every(
+  return Object.keys(OUTPUT_NAMES).every(
     (key) =>
       canonicalJson(stripVolatile(previous[key])) ===
       canonicalJson(stripVolatile(next[key])),
@@ -638,45 +770,113 @@ function outputsAreEquivalent(previous, next) {
 }
 
 async function writeJsonAtomically(path, value) {
+  await mkdir(dirname(path), { recursive: true });
   const temporaryPath = `${path}.tmp`;
   await writeFile(temporaryPath, `${JSON.stringify(value)}\n`, "utf8");
   await rename(temporaryPath, path);
 }
 
-async function main() {
-  const previousSources = await readPreviousSources();
-  const sourceResults = [];
-  for (const source of SOURCE_CONFIG) {
-    process.stdout.write(`Fetching ${source.id}… `);
-    const result = await fetchSource(source, previousSources);
-    sourceResults.push(result);
-    process.stdout.write(
-      `${result.data.features.length} features (${result.fingerprint.slice(0, 12)})\n`,
-    );
-  }
-
-  process.stdout.write("Normalizing parks and joining amenities… ");
-  const generatedAt = new Date().toISOString();
-  const outputs = buildOutputs(sourceResults, generatedAt);
-  process.stdout.write("done\n");
-
-  const previousOutputs = await readExistingOutputs();
-  if (outputsAreEquivalent(previousOutputs, outputs)) {
-    console.log(
-      `No canonical content change (${outputs.sources.upstreamFingerprint.slice(0, 12)}); public/data left untouched.`,
-    );
-    return;
-  }
-
-  await mkdir(OUTPUT_DIRECTORY, { recursive: true });
-  for (const [key, path] of Object.entries(OUTPUT_FILES)) {
+async function writeOutputSet(cityId, outputs) {
+  for (const [key, path] of Object.entries(outputFiles(cityId))) {
     await writeJsonAtomically(path, outputs[key]);
   }
-  console.log(
-    `Wrote ${outputs.summary.parkCount} parks and ${Object.values(outputs.summary.amenities)
-      .map((amenity) => amenity.entityCount)
-      .reduce((total, count) => total + count, 0)} amenity entities.`,
+}
+
+function buildCitiesManifest(effectiveOutputs) {
+  const cities = CITY_CONFIG.map((city) => {
+    const summary = effectiveOutputs[city.id].summary;
+    return {
+      id: city.id,
+      name: city.name,
+      country: city.country,
+      center: city.center,
+      bounds: city.bounds,
+      zoom: city.zoom,
+      dataPath: `/data/${city.id}`,
+      parkCount: summary.parkCount,
+      publicGreenSpaceCount: summary.publicGreenSpaceCount,
+      catalogParkCount: summary.catalogParkCount,
+      totalAreaM2: summary.totalAreaM2,
+      totalAreaHa: summary.totalAreaHa,
+      districtCount: summary.districtCount,
+      sourceDates: {
+        dataAsOf: summary.dataAsOf,
+        snapshotGeneratedAt: summary.generatedAt,
+      },
+      access: null,
+    };
+  });
+  return {
+    schemaVersion: DATA_SCHEMA_VERSION,
+    generatedAt: cities
+      .map((city) => city.sourceDates.snapshotGeneratedAt)
+      .sort()
+      .at(-1),
+    cities,
+  };
+}
+
+async function removeLegacyRootSnapshots() {
+  await Promise.all(
+    Object.values(outputFiles("berlin", true)).map((path) =>
+      unlink(path).catch((error) => {
+        if (error?.code !== "ENOENT") throw error;
+      }),
+    ),
   );
+}
+
+async function main() {
+  const effectiveOutputs = {};
+  for (const city of CITY_CONFIG) {
+    const existing = await readExistingOutputs(city);
+    const previousSources = existing.outputs?.sources ?? null;
+    const sourceResults = [];
+    for (const source of city.sources) {
+      process.stdout.write(`Fetching ${city.id}/${source.id}… `);
+      const result = await fetchSource(city, source, previousSources);
+      sourceResults.push(result);
+      process.stdout.write(
+        `${result.data.features.length} features (${result.fingerprint.slice(0, 12)})\n`,
+      );
+    }
+    process.stdout.write(`Normalizing ${city.name} and joining amenities… `);
+    const outputs = buildOutputs(
+      city,
+      sourceResults,
+      new Date().toISOString(),
+    );
+    process.stdout.write("done\n");
+    const unchanged =
+      existing.migrated &&
+      outputsAreEquivalent(existing.outputs, outputs);
+    if (unchanged) {
+      effectiveOutputs[city.id] = existing.outputs;
+      console.log(
+        `${city.name}: no canonical content change (${outputs.sources.upstreamFingerprint.slice(0, 12)}); snapshots left untouched.`,
+      );
+    } else {
+      await writeOutputSet(city.id, outputs);
+      effectiveOutputs[city.id] = outputs;
+      console.log(
+        `${city.name}: wrote ${outputs.summary.parkCount} mapped green spaces.`,
+      );
+    }
+  }
+
+  const manifestPath = join(OUTPUT_DIRECTORY, "cities.json");
+  const manifest = buildCitiesManifest(effectiveOutputs);
+  const previousManifest = await readOutputSet({ manifest: manifestPath });
+  if (
+    !previousManifest ||
+    canonicalJson(previousManifest.manifest) !== canonicalJson(manifest)
+  ) {
+    await writeJsonAtomically(manifestPath, manifest);
+    console.log(`Wrote city manifest with ${manifest.cities.length} cities.`);
+  } else {
+    console.log("City manifest unchanged.");
+  }
+  await removeLegacyRootSnapshots();
 }
 
 main().catch((error) => {

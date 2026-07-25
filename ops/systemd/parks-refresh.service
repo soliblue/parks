@@ -1,5 +1,5 @@
 [Unit]
-Description=Refresh and deploy Parkblick Berlin data
+Description=Refresh and deploy parks data
 After=network-online.target
 Wants=network-online.target
 

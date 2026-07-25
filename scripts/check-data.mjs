@@ -1,29 +1,35 @@
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import jsts from "jsts";
 import {
+  CITY_CONFIG,
   DATA_SCHEMA_VERSION,
   JOIN_THRESHOLD_METERS,
-  LICENSE,
-  SOURCE_CONFIG,
 } from "./data-sources.mjs";
 import { geometryBounds } from "./geo.mjs";
 
+const execFileAsync = promisify(execFile);
 const PROJECT_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DATA_DIRECTORY = join(PROJECT_ROOT, "public", "data");
-const PATHS = {
-  parks: join(DATA_DIRECTORY, "parks.geojson"),
-  index: join(DATA_DIRECTORY, "parks-index.json"),
-  summary: join(DATA_DIRECTORY, "summary.json"),
-  sources: join(DATA_DIRECTORY, "sources.json"),
+const OUTPUT_NAMES = {
+  parks: "parks.geojson",
+  index: "parks-index.json",
+  summary: "summary.json",
+  sources: "sources.json",
 };
-const AMENITY_KINDS = [
-  "playground",
-  "toilet",
-  "drinkingFountain",
-  "dogRun",
-];
+
+function cityPaths(cityId) {
+  return Object.fromEntries(
+    Object.entries(OUTPUT_NAMES).map(([key, name]) => [
+      key,
+      join(DATA_DIRECTORY, cityId, name),
+    ]),
+  );
+}
 
 function invariant(condition, message) {
   if (!condition) throw new Error(message);
@@ -48,10 +54,14 @@ async function readJson(path) {
   }
 }
 
-function checkSchemaVersion(document, name) {
+async function fileSha256(path) {
+  return createHash("sha256").update(await readFile(path)).digest("hex");
+}
+
+function checkSchemaVersion(document, label) {
   invariant(
     document.schemaVersion === DATA_SCHEMA_VERSION,
-    `${name}: expected schemaVersion ${DATA_SCHEMA_VERSION}`,
+    `${label}: expected schemaVersion ${DATA_SCHEMA_VERSION}`,
   );
 }
 
@@ -62,7 +72,7 @@ function checkDate(value, label) {
   );
 }
 
-function checkRing(ring, parkId) {
+function checkRing(ring, parkId, coordinateBounds) {
   invariant(Array.isArray(ring) && ring.length >= 4, `${parkId}: short ring`);
   const first = ring[0];
   const last = ring[ring.length - 1];
@@ -70,6 +80,7 @@ function checkRing(ring, parkId) {
     first[0] === last[0] && first[1] === last[1],
     `${parkId}: unclosed ring`,
   );
+  const [west, south, east, north] = coordinateBounds;
   for (const position of ring) {
     invariant(
       Array.isArray(position) &&
@@ -79,16 +90,16 @@ function checkRing(ring, parkId) {
       `${parkId}: invalid coordinate`,
     );
     invariant(
-      position[0] >= 12 &&
-        position[0] <= 15 &&
-        position[1] >= 51 &&
-        position[1] <= 54,
-      `${parkId}: coordinate outside Berlin region`,
+      position[0] >= west &&
+        position[0] <= east &&
+        position[1] >= south &&
+        position[1] <= north,
+      `${parkId}: coordinate outside city region`,
     );
   }
 }
 
-function checkGeometry(geometry, parkId) {
+function checkGeometry(geometry, parkId, city) {
   invariant(
     geometry?.type === "Polygon" || geometry?.type === "MultiPolygon",
     `${parkId}: unsupported park geometry`,
@@ -98,7 +109,9 @@ function checkGeometry(geometry, parkId) {
   invariant(polygons.length > 0, `${parkId}: geometry has no polygons`);
   for (const polygon of polygons) {
     invariant(polygon.length > 0, `${parkId}: polygon has no rings`);
-    polygon.forEach((ring) => checkRing(ring, parkId));
+    polygon.forEach((ring) =>
+      checkRing(ring, parkId, city.coordinateBounds),
+    );
   }
   const validity = new jsts.operation.valid.IsValidOp(
     new jsts.io.GeoJSONReader().read(geometry),
@@ -109,7 +122,8 @@ function checkGeometry(geometry, parkId) {
   );
 }
 
-function checkObservation(observation, kind, parkId) {
+function checkObservation(observation, source, parkId) {
+  const { kind, coverage } = source;
   invariant(
     observation &&
       (observation.status === "observed-nearby" ||
@@ -121,11 +135,9 @@ function checkObservation(observation, kind, parkId) {
     `${parkId}: invalid ${kind} count`,
   );
   invariant(
-    observation.coverage === "official-observations" ||
-      observation.coverage === "partial-official-observations",
-    `${parkId}: invalid ${kind} coverage`,
+    observation.coverage === coverage,
+    `${parkId}: ${kind} coverage mismatch`,
   );
-
   if (observation.status === "observed-nearby") {
     invariant(observation.count > 0, `${parkId}: observed ${kind} has no count`);
     invariant(
@@ -142,16 +154,16 @@ function checkObservation(observation, kind, parkId) {
   }
 }
 
-function checkParkFeature(feature, ids) {
-  invariant(feature?.type === "Feature", "parks: non-Feature item");
-  invariant(
-    typeof feature.id === "string" &&
-      /^\d{8}:[0-9a-f]{8}$/i.test(feature.id),
-    `parks: invalid PITID ${feature.id}`,
-  );
-  invariant(!ids.has(feature.id), `parks: duplicate PITID ${feature.id}`);
+function checkParkFeature(feature, ids, city, amenitySources) {
+  invariant(feature?.type === "Feature", `${city.id}: non-Feature item`);
+  const idIsValid =
+    city.id === "berlin"
+      ? /^\d{8}:[0-9a-f]{8}$/i.test(feature.id)
+      : /^wien:\d+$/.test(feature.id);
+  invariant(idIsValid, `${city.id}: invalid park id ${feature.id}`);
+  invariant(!ids.has(feature.id), `${city.id}: duplicate id ${feature.id}`);
   ids.add(feature.id);
-  checkGeometry(feature.geometry, feature.id);
+  checkGeometry(feature.geometry, feature.id, city);
 
   const properties = feature.properties;
   invariant(properties?.id === feature.id, `${feature.id}: property id mismatch`);
@@ -161,8 +173,9 @@ function checkParkFeature(feature, ids) {
   );
   invariant(
     typeof properties.district === "string" &&
-      properties.district.trim().length > 0,
-    `${feature.id}: empty district`,
+      properties.district.trim().length > 0 &&
+      properties.district !== "Unbekannter Bezirk",
+    `${feature.id}: missing official district assignment`,
   );
   invariant(
     Number.isFinite(properties.areaM2) && properties.areaM2 >= 0,
@@ -201,15 +214,9 @@ function checkParkFeature(feature, ids) {
     !Object.keys(properties).some((key) => /^has[A-Z_]/.test(key)),
     `${feature.id}: authoritative has* boolean is forbidden`,
   );
-
-  for (const kind of AMENITY_KINDS) {
-    checkObservation(properties.amenities?.[kind], kind, feature.id);
+  for (const source of amenitySources) {
+    checkObservation(properties.amenities?.[source.kind], source, feature.id);
   }
-  invariant(
-    properties.amenities.dogRun.coverage ===
-      "partial-official-observations",
-    `${feature.id}: dog-run coverage must remain explicitly partial`,
-  );
 }
 
 function checkIndexEntry(entry, feature) {
@@ -232,80 +239,110 @@ function checkIndexEntry(entry, feature) {
   );
 }
 
-function checkSources(sources) {
+function checkSources(document, city) {
   invariant(
-    sources.publisher === "Land Berlin",
-    "sources: unexpected publisher",
+    document.publisher === city.publisher,
+    `${city.id}/sources: unexpected publisher`,
   );
   invariant(
-    sources.license?.id === LICENSE.id &&
-      sources.license?.url === LICENSE.url,
-    "sources: unexpected license",
+    document.license?.id === city.license.id &&
+      document.license?.url === city.license.url,
+    `${city.id}/sources: unexpected license`,
   );
   invariant(
-    /^[0-9a-f]{64}$/.test(sources.upstreamFingerprint),
-    "sources: invalid upstream fingerprint",
+    Number.isInteger(document.excludedOutsideCityCount) &&
+      document.excludedOutsideCityCount >= 0,
+    `${city.id}/sources: invalid outside-city exclusion count`,
+  );
+  if (city.attribution) {
+    invariant(
+      document.attribution === city.attribution,
+      `${city.id}/sources: required attribution missing`,
+    );
+  }
+  invariant(
+    /^[0-9a-f]{64}$/.test(document.upstreamFingerprint),
+    `${city.id}/sources: invalid upstream fingerprint`,
   );
   invariant(
-    sources.methodology?.canonicalParkId === "pitid",
-    "sources: PITID methodology missing",
+    document.methodology?.canonicalParkId === city.canonicalParkId,
+    `${city.id}/sources: canonical id methodology mismatch`,
   );
   invariant(
-    sources.methodology?.amenityJoinThresholdMeters === JOIN_THRESHOLD_METERS,
-    "sources: join threshold mismatch",
+    document.methodology?.amenityJoinThresholdMeters ===
+      JOIN_THRESHOLD_METERS,
+    `${city.id}/sources: join threshold mismatch`,
   );
   invariant(
-    typeof sources.methodology?.absenceSemantics === "string" &&
-      sources.methodology.absenceSemantics.includes("not-observed") &&
-      sources.methodology.absenceSemantics.includes("authoritative"),
-    "sources: absence semantics missing",
+    typeof document.methodology?.absenceSemantics === "string" &&
+      document.methodology.absenceSemantics.includes("not-observed") &&
+      document.methodology.absenceSemantics.includes("authoritative"),
+    `${city.id}/sources: absence semantics missing`,
   );
+  if (city.id === "vienna") {
+    invariant(
+      document.methodology?.districtAssignment.includes(
+        "BEZIRKSGRENZEOGD",
+      ) &&
+        document.methodology?.inventoryDistinction.includes(
+          "PARKINFOOGD",
+        ),
+      "vienna/sources: inventory or district methodology missing",
+    );
+  }
 
-  for (const config of SOURCE_CONFIG) {
-    const source = sources.sources.find((candidate) => candidate.id === config.id);
-    invariant(source, `sources: missing ${config.id}`);
+  for (const config of city.sources) {
+    const source = document.sources.find(
+      (candidate) => candidate.id === config.id,
+    );
+    invariant(source, `${city.id}/sources: missing ${config.id}`);
     invariant(
       source.featureCount >= config.minimumCount,
-      `sources: ${config.id} below minimum count`,
+      `${city.id}/sources: ${config.id} below minimum count`,
     );
     invariant(
       Number.isInteger(source.normalizedEntityCount) &&
         source.normalizedEntityCount > 0 &&
         source.normalizedEntityCount <= source.featureCount,
-      `sources: ${config.id} invalid normalized count`,
+      `${city.id}/sources: ${config.id} invalid normalized count`,
     );
     invariant(
-      source.coverage === config.coverage,
-      `sources: ${config.id} coverage mismatch`,
+      source.role === config.role &&
+        source.kind === config.kind &&
+        source.coverage === config.coverage,
+      `${city.id}/sources: ${config.id} metadata mismatch`,
     );
     invariant(
-      source.license?.id === LICENSE.id,
-      `sources: ${config.id} license mismatch`,
+      source.license?.id === city.license.id,
+      `${city.id}/sources: ${config.id} license mismatch`,
     );
     invariant(
       /^[0-9a-f]{64}$/.test(source.contentFingerprint),
-      `sources: ${config.id} invalid fingerprint`,
+      `${city.id}/sources: ${config.id} invalid fingerprint`,
     );
-    checkDate(source.retrievedAt, `sources: ${config.id} retrievedAt`);
+    checkDate(source.retrievedAt, `${city.id}/sources: ${config.id}`);
     const requestUrl = new URL(source.requestUrl);
+    const expectedLayer = `${city.wfs.namespace ?? ""}${config.layer}`;
     invariant(
       requestUrl.protocol === "https:" &&
-        requestUrl.hostname === "gdi.berlin.de" &&
+        requestUrl.hostname === new URL(city.wfs.baseUrl).hostname &&
         requestUrl.searchParams.get("request") === "GetFeature" &&
-        requestUrl.searchParams.get("typeNames") === config.layer &&
+        requestUrl.searchParams.get(city.wfs.typeNameParameter) ===
+          expectedLayer &&
         requestUrl.searchParams.get("srsName") === "EPSG:4326",
-      `sources: ${config.id} invalid WFS request URL`,
+      `${city.id}/sources: ${config.id} invalid WFS request URL`,
     );
   }
   invariant(
-    sources.sources.length === SOURCE_CONFIG.length,
-    "sources: unexpected extra sources",
+    document.sources.length === city.sources.length,
+    `${city.id}/sources: unexpected extra sources`,
   );
 }
 
-async function main() {
+async function checkCity(city) {
+  const paths = cityPaths(city.id);
   const [parks, index, summary, sources] = await Promise.all(
-    Object.values(PATHS).map(readJson),
+    Object.values(paths).map(readJson),
   );
   for (const [name, document] of Object.entries({
     parks,
@@ -313,8 +350,8 @@ async function main() {
     summary,
     sources,
   })) {
-    checkSchemaVersion(document, name);
-    checkDate(document.generatedAt, `${name}: generatedAt`);
+    checkSchemaVersion(document, `${city.id}/${name}`);
+    checkDate(document.generatedAt, `${city.id}/${name}/generatedAt`);
   }
   invariant(
     new Set([
@@ -323,25 +360,63 @@ async function main() {
       summary.generatedAt,
       sources.generatedAt,
     ]).size === 1,
-    "generatedAt must match across all snapshots",
+    `${city.id}: generatedAt must match across snapshots`,
   );
   invariant(
     parks?.type === "FeatureCollection" && Array.isArray(parks.features),
-    "parks: invalid FeatureCollection",
+    `${city.id}/parks: invalid FeatureCollection`,
   );
-  invariant(Array.isArray(index.parks), "index: parks must be an array");
+  invariant(Array.isArray(index.parks), `${city.id}/index: invalid parks`);
   invariant(
     parks.features.length === index.parks.length &&
       parks.features.length === summary.parkCount,
-    "park counts disagree across snapshots",
+    `${city.id}: park counts disagree across snapshots`,
   );
+  invariant(
+    summary.city === city.name && summary.country === city.country,
+    `${city.id}/summary: city identity mismatch`,
+  );
+  invariant(
+    summary.publicGreenSpaceCount === summary.parkCount,
+    `${city.id}/summary: normalized public-green count mismatch`,
+  );
+  if (city.id === "vienna") {
+    invariant(
+      summary.sourceParkFeatureCount ===
+        sources.sources.find((source) => source.id === "parks").featureCount,
+      "vienna/summary: source polygon count mismatch",
+    );
+    invariant(
+      summary.catalogParkCount ===
+        sources.sources.find((source) => source.id === "park-catalog")
+          .featureCount,
+      "vienna/summary: park catalogue count mismatch",
+    );
+    invariant(
+      Number.isInteger(summary.excludedOutsideCityCount) &&
+        summary.excludedOutsideCityCount > 0 &&
+        summary.sourceParkFeatureCount - summary.parkCount ===
+          summary.excludedOutsideCityCount,
+      "vienna/summary: outside-city exclusion mismatch",
+    );
+  } else {
+    invariant(
+      summary.catalogParkCount === null &&
+        summary.excludedOutsideCityCount === 0,
+      "berlin/summary: unexpected catalogue or exclusion count",
+    );
+  }
 
+  const amenitySources = city.sources.filter(
+    (source) => source.role === "amenity",
+  );
   const ids = new Set();
-  parks.features.forEach((feature) => checkParkFeature(feature, ids));
+  parks.features.forEach((feature) =>
+    checkParkFeature(feature, ids, city, amenitySources),
+  );
   parks.features.forEach((feature, position) =>
     checkIndexEntry(index.parks[position], feature),
   );
-
   const areaM2 = round(
     parks.features.reduce(
       (total, feature) => total + feature.properties.areaM2,
@@ -349,10 +424,10 @@ async function main() {
     ),
     1,
   );
-  invariant(summary.totalAreaM2 === areaM2, "summary: total area mismatch");
+  invariant(summary.totalAreaM2 === areaM2, `${city.id}: area mismatch`);
   invariant(
     summary.totalAreaHa === round(areaM2 / 10_000, 1),
-    "summary: hectare total mismatch",
+    `${city.id}: hectare mismatch`,
   );
   const districts = new Set(
     parks.features.map((feature) => feature.properties.district),
@@ -360,47 +435,228 @@ async function main() {
   invariant(
     summary.districtCount === districts.size &&
       summary.districts.length === districts.size,
-    "summary: district count mismatch",
+    `${city.id}: district count mismatch`,
   );
-  invariant(
-    summary.sourceParkFeatureCount ===
-      sources.sources.find((source) => source.id === "parks").featureCount,
-    "summary: source park count mismatch",
-  );
-  for (const kind of AMENITY_KINDS) {
-    const observedCount = parks.features.filter(
-      (feature) =>
-        feature.properties.amenities[kind].status === "observed-nearby",
-    ).length;
+  if (city.id === "vienna") {
     invariant(
-      summary.amenities[kind].parksWithObservation === observedCount,
-      `summary: ${kind} observed park count mismatch`,
+      summary.districtCount ===
+        sources.sources.find((source) => source.id === "districts")
+          .featureCount,
+      "vienna: district metric must match 23 official boundaries",
     );
   }
+  for (const source of amenitySources) {
+    const observedCount = parks.features.filter(
+      (feature) =>
+        feature.properties.amenities[source.kind].status ===
+        "observed-nearby",
+    ).length;
+    invariant(
+      summary.amenities[source.kind].parksWithObservation === observedCount &&
+        summary.amenities[source.kind].coverage === source.coverage,
+      `${city.id}/summary: ${source.kind} mismatch`,
+    );
+  }
+  checkSources(sources, city);
   invariant(
-    summary.amenities.dogRun.coverage ===
-      "partial-official-observations",
-    "summary: dog-run coverage must be partial",
+    sources.excludedOutsideCityCount === summary.excludedOutsideCityCount,
+    `${city.id}: source/summary outside-city exclusion mismatch`,
   );
-  checkSources(sources);
 
   const fileSizes = Object.fromEntries(
     await Promise.all(
-      Object.entries(PATHS).map(async ([name, path]) => [
+      Object.entries(paths).map(async ([name, path]) => [
         name,
         (await stat(path)).size,
       ]),
     ),
   );
-  invariant(fileSizes.parks < 12_000_000, "parks.geojson is unexpectedly large");
+  invariant(
+    fileSizes.parks < 20_000_000,
+    `${city.id}/parks.geojson is unexpectedly large`,
+  );
   invariant(
     fileSizes.index < 6_000_000,
-    "parks-index.json is unexpectedly large",
+    `${city.id}/parks-index.json is unexpectedly large`,
+  );
+  return { summary, fileSizes };
+}
+
+function checkManifestEntry(entry, city, summary) {
+  const expected = {
+    id: city.id,
+    name: city.name,
+    country: city.country,
+    center: city.center,
+    bounds: city.bounds,
+    zoom: city.zoom,
+    dataPath: `/data/${city.id}`,
+    parkCount: summary.parkCount,
+    publicGreenSpaceCount: summary.publicGreenSpaceCount,
+    catalogParkCount: summary.catalogParkCount,
+    totalAreaM2: summary.totalAreaM2,
+    totalAreaHa: summary.totalAreaHa,
+    districtCount: summary.districtCount,
+    sourceDates: {
+      dataAsOf: summary.dataAsOf,
+      snapshotGeneratedAt: summary.generatedAt,
+    },
+    access: null,
+  };
+  invariant(
+    sameJson(entry, expected),
+    `cities.json: ${city.id} diverges from summary/config`,
+  );
+}
+
+async function checkAccess(checked) {
+  const path = join(DATA_DIRECTORY, "access.json");
+  const access = await readJson(path);
+  checkSchemaVersion(access, "access.json");
+  checkDate(access.generatedAt, "access.json/generatedAt");
+  invariant(
+    access.methodology &&
+      typeof access.methodology.numerator === "string" &&
+      typeof access.methodology.denominator === "string" &&
+      typeof access.methodology.uncertainty === "string",
+    "access.json: metric definition or uncertainty missing",
+  );
+  invariant(
+    Array.isArray(access.sources) && access.sources.length >= 7,
+    "access.json: source provenance missing",
+  );
+  invariant(
+    access.sources.some(
+      (source) =>
+        source.id === "jrc-estat-population-2021-100m" &&
+        /^[0-9a-f]{64}$/.test(source.sha256),
+    ),
+    "access.json: JRC population source missing",
   );
 
-  console.log(
-    `Data check passed: ${summary.parkCount} parks, ${summary.totalAreaHa.toLocaleString("de-DE")} ha, ${summary.districtCount} districts, ${(fileSizes.parks / 1_000_000).toFixed(2)} MB GeoJSON.`,
+  for (const city of CITY_CONFIG) {
+    const result = access.cities?.[city.id];
+    invariant(result, `access.json: missing ${city.id}`);
+    checkDate(result.generatedAt, `access.json/${city.id}/generatedAt`);
+    invariant(
+      result.generatedAt === access.generatedAt,
+      `access.json/${city.id}: generatedAt mismatch`,
+    );
+    invariant(
+      result.method === "walking-network" &&
+        result.populationYear === 2021 &&
+        result.thresholdMinutes === 10 &&
+        result.thresholdMeters === 805,
+      `access.json/${city.id}: method contract mismatch`,
+    );
+    invariant(
+      Number.isInteger(result.populationTotal) &&
+        result.populationTotal > 1_000_000 &&
+        Number.isInteger(result.populationWithinThreshold) &&
+        result.populationWithinThreshold >= 0 &&
+        result.populationWithinThreshold <= result.populationTotal,
+      `access.json/${city.id}: invalid population numerator or denominator`,
+    );
+    invariant(
+      result.sharePercent ===
+        round(
+          (result.populationWithinThreshold / result.populationTotal) * 100,
+          1,
+        ),
+      `access.json/${city.id}: percentage does not match population totals`,
+    );
+    invariant(
+      result.guardrails?.populationGridResolutionMeters === 100 &&
+        result.guardrails?.minimumEligibleParkAreaHa === 0.5 &&
+        result.guardrails?.parkInputFeatureCount ===
+          checked[city.id].summary.parkCount &&
+        result.guardrails?.eligibleParkCount > 0 &&
+        result.guardrails?.parksWithoutNetworkAccess >= 0 &&
+        !Object.hasOwn(result.guardrails, "networkSourceWasCached"),
+      `access.json/${city.id}: guardrails are incomplete or operationally unstable`,
+    );
+
+    const parkSource = access.sources.find(
+      (source) => source.id === `${city.id}-parks`,
+    );
+    const networkSource = access.sources.find(
+      (source) => source.id === `${city.id}-pedestrian-network`,
+    );
+    invariant(
+      parkSource?.sha256 ===
+        (await fileSha256(cityPaths(city.id).parks)),
+      `access.json/${city.id}: park snapshot hash is stale`,
+    );
+    invariant(
+      /^[0-9a-f]{64}$/.test(networkSource?.sha256 ?? ""),
+      `access.json/${city.id}: OSM network source missing`,
+    );
+  }
+}
+
+async function checkBrandRemoval() {
+  const legacyBrandPattern = new RegExp(["park", "blick"].join(""), "i");
+  const { stdout } = await execFileAsync("git", ["ls-files", "-z"], {
+    cwd: PROJECT_ROOT,
+    encoding: "buffer",
+    maxBuffer: 20_000_000,
+  });
+  const paths = stdout
+    .toString("utf8")
+    .split("\0")
+    .filter(Boolean);
+  const offenders = [];
+  for (const path of paths) {
+    let buffer;
+    try {
+      buffer = await readFile(join(PROJECT_ROOT, path));
+    } catch {
+      continue;
+    }
+    if (buffer.includes(0)) continue;
+    if (legacyBrandPattern.test(buffer.toString("utf8"))) offenders.push(path);
+  }
+  invariant(
+    offenders.length === 0,
+    `legacy brand remains in tracked text: ${offenders.join(", ")}`,
   );
+}
+
+async function main() {
+  const checked = {};
+  for (const city of CITY_CONFIG) {
+    checked[city.id] = await checkCity(city);
+  }
+
+  const manifest = await readJson(join(DATA_DIRECTORY, "cities.json"));
+  checkSchemaVersion(manifest, "cities.json");
+  checkDate(manifest.generatedAt, "cities.json/generatedAt");
+  invariant(
+    Array.isArray(manifest.cities) &&
+      manifest.cities.length === CITY_CONFIG.length,
+    "cities.json: city count mismatch",
+  );
+  for (const city of CITY_CONFIG) {
+    const entry = manifest.cities.find((candidate) => candidate.id === city.id);
+    invariant(entry, `cities.json: missing ${city.id}`);
+    checkManifestEntry(entry, city, checked[city.id].summary);
+  }
+  invariant(
+    manifest.generatedAt ===
+      manifest.cities
+        .map((city) => city.sourceDates.snapshotGeneratedAt)
+        .sort()
+        .at(-1),
+    "cities.json: generatedAt must be the latest city snapshot",
+  );
+  await checkAccess(checked);
+  await checkBrandRemoval();
+
+  const result = CITY_CONFIG.map((city) => {
+    const { summary, fileSizes } = checked[city.id];
+    return `${city.name}: ${summary.parkCount} Flächen, ${summary.totalAreaHa.toLocaleString("de-DE")} ha, ${summary.districtCount} Bezirke, ${(fileSizes.parks / 1_000_000).toFixed(2)} MB`;
+  }).join("; ");
+  console.log(`Data check passed (schema v${DATA_SCHEMA_VERSION}): ${result}.`);
 }
 
 main().catch((error) => {

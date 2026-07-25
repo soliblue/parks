@@ -6,7 +6,7 @@ PARKS_LOCK_FILE="${PARKS_LOCK_FILE:-/tmp/parks-refresh.lock}"
 
 exec 9>"$PARKS_LOCK_FILE"
 if ! flock -n 9; then
-  printf 'Another Parkblick refresh is already running.\n'
+  printf 'Another parks refresh is already running.\n'
   exit 0
 fi
 
@@ -21,17 +21,22 @@ fi
 git pull --ff-only origin main
 npm ci
 npm run data:refresh
-npm run data:check
 
-if git diff --quiet -- public/data; then
+if git diff --quiet -- \
+  public/data/berlin \
+  public/data/vienna \
+  public/data/cities.json; then
+  npm run data:check
   printf 'No upstream data change; skipping build, commit, and deploy.\n'
   exit 0
 fi
 
+npm run data:access
+npm run data:check
 CI=1 npm test
 git add -- public/data
 git diff --cached --check
-git commit -m "data: refresh Berlin park snapshot [skip ci]"
+git commit -m "data: refresh city park snapshots [skip ci]"
 git push origin main
 
 PARKS_SKIP_BUILD=1 "$PARKS_ROOT/scripts/deploy-production"

@@ -1,6 +1,8 @@
 import type { AmenityKey, Coordinate } from './parks'
+import { isCityId, type CityId } from './cities'
 
 export interface UrlState {
+  cityId: CityId
   query: string
   amenities: AmenityKey[]
   origin: Coordinate | null
@@ -25,6 +27,7 @@ const isValidOrigin = (value: number[] | undefined): value is Coordinate =>
 
 export const readUrlState = (): UrlState => {
   const parameters = new URLSearchParams(window.location.search)
+  const cityParameter = parameters.get('city')
   const coordinateParts = parameters
     .get('origin')
     ?.split(',')
@@ -36,6 +39,7 @@ export const readUrlState = (): UrlState => {
   )
 
   return {
+    cityId: isCityId(cityParameter) ? cityParameter : 'berlin',
     query: parameters.get('q') ?? '',
     amenities,
     origin,
@@ -44,11 +48,15 @@ export const readUrlState = (): UrlState => {
 }
 
 export const writeUrlState = ({
+  cityId,
   query,
   amenities,
   selectedParkId,
 }: UrlState) => {
   const url = new URL(window.location.href)
+  if (cityId === 'berlin') url.searchParams.delete('city')
+  else url.searchParams.set('city', cityId)
+
   if (query.trim()) url.searchParams.set('q', query.trim())
   else url.searchParams.delete('q')
 

@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ACCESS_VENV="${PARKS_ACCESS_VENV:-$PROJECT_ROOT/scripts/access/.venv}"
+ACCESS_CACHE="${PARKS_ACCESS_CACHE:-$PROJECT_ROOT/scripts/access/.cache}"
+REQUIREMENTS="$PROJECT_ROOT/requirements-access.txt"
+REQUIREMENTS_HASH="$(sha256sum "$REQUIREMENTS" | cut -d' ' -f1)"
+INSTALLED_HASH_FILE="$ACCESS_VENV/.requirements.sha256"
+
+mkdir -p "$ACCESS_CACHE/pip"
+
+if [[ ! -x "$ACCESS_VENV/bin/python" ]]; then
+  python3 -m venv "$ACCESS_VENV"
+fi
+
+if [[ ! -f "$INSTALLED_HASH_FILE" ]] ||
+  [[ "$(tr -d '\n' < "$INSTALLED_HASH_FILE")" != "$REQUIREMENTS_HASH" ]]; then
+  PIP_CACHE_DIR="$ACCESS_CACHE/pip" \
+    "$ACCESS_VENV/bin/pip" install \
+      --disable-pip-version-check \
+      --only-binary=:all: \
+      --requirement "$REQUIREMENTS"
+  printf '%s\n' "$REQUIREMENTS_HASH" > "$INSTALLED_HASH_FILE"
+fi
+
+export PYTHONHASHSEED=0
+exec "$ACCESS_VENV/bin/python" \
+  "$PROJECT_ROOT/scripts/access/build_access.py" \
+  --project-root "$PROJECT_ROOT" \
+  --cache-dir "$ACCESS_CACHE" \
+  "$@"

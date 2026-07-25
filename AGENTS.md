@@ -1,6 +1,6 @@
-# Parkblick
+# Parks
 
-Berlin-first public parks explorer at `https://parks.soli.blue`.
+Berlin and Vienna public-green comparison at `https://parks.soli.blue`.
 
 - Keep the public app static-first.
 - Fetch and normalize official data at build time.

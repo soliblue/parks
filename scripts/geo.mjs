@@ -83,6 +83,85 @@ function positionsEqual(left, right) {
   return left[0] === right[0] && left[1] === right[1];
 }
 
+function comparePositions(left, right) {
+  return left[0] - right[0] || left[1] - right[1];
+}
+
+function compareRotations(points, leftStart, rightStart) {
+  for (let offset = 0; offset < points.length; offset += 1) {
+    const comparison = comparePositions(
+      points[(leftStart + offset) % points.length],
+      points[(rightStart + offset) % points.length],
+    );
+    if (comparison !== 0) return comparison;
+  }
+  return 0;
+}
+
+function signedRingArea(ring) {
+  let doubleArea = 0;
+  for (let index = 0; index < ring.length - 1; index += 1) {
+    const current = ring[index];
+    const next = ring[index + 1];
+    doubleArea += current[0] * next[1] - next[0] * current[1];
+  }
+  return doubleArea / 2;
+}
+
+function canonicalizeRing(ring, exterior) {
+  let points = positionsEqual(ring[0], ring[ring.length - 1])
+    ? ring.slice(0, -1)
+    : ring.slice();
+  const isCounterClockwise = signedRingArea([...points, points[0]]) > 0;
+  if ((exterior && !isCounterClockwise) || (!exterior && isCounterClockwise)) {
+    points = points.reverse();
+  }
+  let bestStart = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    if (compareRotations(points, index, bestStart) < 0) bestStart = index;
+  }
+  const rotated = [
+    ...points.slice(bestStart),
+    ...points.slice(0, bestStart),
+  ].map((position) => [...position]);
+  rotated.push([...rotated[0]]);
+  return rotated;
+}
+
+function canonicalizePolygon(polygon) {
+  const exterior = canonicalizeRing(polygon[0], true);
+  const holes = polygon
+    .slice(1)
+    .map((ring) => canonicalizeRing(ring, false))
+    .sort((left, right) =>
+      JSON.stringify(left).localeCompare(JSON.stringify(right)),
+    );
+  return [exterior, ...holes];
+}
+
+export function canonicalizeGeometry(geometry) {
+  if (geometry.type === "Point") {
+    return { type: "Point", coordinates: [...geometry.coordinates] };
+  }
+  if (geometry.type === "Polygon") {
+    return {
+      type: "Polygon",
+      coordinates: canonicalizePolygon(geometry.coordinates),
+    };
+  }
+  if (geometry.type === "MultiPolygon") {
+    return {
+      type: "MultiPolygon",
+      coordinates: geometry.coordinates
+        .map(canonicalizePolygon)
+        .sort((left, right) =>
+          JSON.stringify(left).localeCompare(JSON.stringify(right)),
+        ),
+    };
+  }
+  throw new Error(`Unsupported geometry type: ${geometry.type}`);
+}
+
 function roundNumber(value, precision) {
   const factor = 10 ** precision;
   return Math.round(value * factor) / factor;

@@ -1,20 +1,18 @@
 import buffer from '@turf/buffer'
 import { point } from '@turf/helpers'
 import { ChevronLeft, Crosshair, Minus, Plus } from 'lucide-react'
-import maplibregl, {
+import {
   GeoJSONSource,
   Map as MapLibreMap,
   Marker,
   type FilterSpecification,
   type MapMouseEvent,
+  type StyleSpecification,
 } from 'maplibre-gl'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { Feature, FeatureCollection, Polygon } from 'geojson'
 import type { Coordinate, Park, ParksGeoJson } from '../lib/parks'
 
-const BASEMAP_STYLE =
-  'https://sgx.geodatenzentrum.de/gdz_basemapde_vektor/styles/bm_web_gry.json'
-const BERLIN_CENTER: Coordinate = [13.405, 52.52]
 const BAND_KILOMETERS = [
   { minutes: 15, distance: 1.05 },
   { minutes: 10, distance: 0.7 },
@@ -130,12 +128,17 @@ interface HandlerRefs {
 }
 
 interface ParkMapProps {
+  basemapStyle: string | StyleSpecification
+  center: Coordinate
+  cityName: string
   geojson: ParksGeoJson
+  mapCredit: ReactNode
   origin: Coordinate | null
   parks: Park[]
   panelOpen: boolean
   selectedParkId: string | null
   visibleParkIds: readonly string[]
+  zoom: number
   onOriginChange: (coordinate: Coordinate) => void
   onParkSelect: (parkId: string) => void
   onPanelToggle: () => void
@@ -251,12 +254,17 @@ const syncMapData = (
 }
 
 export function ParkMap({
+  basemapStyle,
+  center,
+  cityName,
   geojson,
+  mapCredit,
   origin,
   parks,
   panelOpen,
   selectedParkId,
   visibleParkIds,
+  zoom,
   onOriginChange,
   onParkSelect,
   onPanelToggle,
@@ -264,6 +272,7 @@ export function ParkMap({
 }: ParkMapProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
+  const readyMapRef = useRef<MapLibreMap | null>(null)
   const markerRef = useRef<Marker | null>(null)
   const bandLabelMarkersRef = useRef<Marker[]>([])
   const latestDataRef = useRef({ geojson, origin })
@@ -274,6 +283,7 @@ export function ParkMap({
   })
   const [mapReady, setMapReady] = useState(false)
   const [mapError, setMapError] = useState<string | null>(null)
+  const [centerLongitude, centerLatitude] = center
 
   latestDataRef.current = { geojson, origin }
   handlersRef.current = {
@@ -285,25 +295,30 @@ export function ParkMap({
   useEffect(() => {
     if (!containerRef.current) return
 
+    setMapReady(false)
+    setMapError(null)
     const map = new MapLibreMap({
       container: containerRef.current,
-      style: BASEMAP_STYLE,
-      center: BERLIN_CENTER,
-      zoom: 11.15,
+      style: basemapStyle,
+      center: [centerLongitude, centerLatitude],
+      zoom,
       minZoom: 8,
       maxZoom: 19,
       attributionControl: false,
       cooperativeGestures: true,
     })
     mapRef.current = map
+    let active = true
 
     const handleLoad = () => {
-      softenOfficialBasemap(map)
+      if (!active) return
+      if (cityName === 'Berlin') softenOfficialBasemap(map)
       syncMapData(
         map,
         latestDataRef.current.geojson,
         latestDataRef.current.origin,
       )
+      readyMapRef.current = map
       setMapReady(true)
       setMapError(null)
     }
@@ -329,34 +344,38 @@ export function ParkMap({
       map.getCanvas().style.cursor = hasPark ? 'pointer' : ''
     }
 
+    const handleError = () => {
+      if (active && readyMapRef.current !== map) {
+        setMapError('Die Basiskarte konnte nicht geladen werden.')
+      }
+    }
+
     map.on('load', handleLoad)
     map.on('click', handleClick)
     map.on('mousemove', handleMouseMove)
-    map.on('error', () => {
-      if (!map.isStyleLoaded()) {
-        setMapError('Die Basiskarte konnte nicht geladen werden.')
-      }
-    })
+    map.on('error', handleError)
 
     return () => {
+      active = false
       bandLabelMarkersRef.current.forEach((marker) => marker.remove())
       bandLabelMarkersRef.current = []
       markerRef.current?.remove()
       markerRef.current = null
       map.remove()
-      mapRef.current = null
+      if (mapRef.current === map) mapRef.current = null
+      if (readyMapRef.current === map) readyMapRef.current = null
     }
-  }, [])
+  }, [basemapStyle, centerLatitude, centerLongitude, cityName, zoom])
 
   useEffect(() => {
     const map = mapRef.current
-    if (!map) return
+    if (!map || readyMapRef.current !== map) return
     syncMapData(map, geojson, origin)
   }, [geojson, mapReady, origin])
 
   useEffect(() => {
     const map = mapRef.current
-    if (!map || !mapReady) return
+    if (!map || !mapReady || readyMapRef.current !== map) return
 
     const filter: FilterSpecification =
       visibleParkIds.length > 0
@@ -368,7 +387,7 @@ export function ParkMap({
 
   useEffect(() => {
     const map = mapRef.current
-    if (!map || !mapReady) return
+    if (!map || !mapReady || readyMapRef.current !== map) return
     map.setFilter('park-selected', [
       '==',
       ['get', 'id'],
@@ -403,7 +422,7 @@ export function ParkMap({
 
   useEffect(() => {
     const map = mapRef.current
-    if (!map) return
+    if (!map || readyMapRef.current !== map) return
 
     bandLabelMarkersRef.current.forEach((marker) => marker.remove())
     bandLabelMarkersRef.current = []
@@ -491,7 +510,7 @@ export function ParkMap({
     <section
       className="map-shell"
       data-testid="park-map"
-      aria-label="Karte der Berliner Parks"
+      aria-label={`Karte der Parks in ${cityName}`}
     >
       <div className="map-canvas" ref={containerRef} />
       <button
@@ -528,21 +547,7 @@ export function ParkMap({
       >
         <Crosshair aria-hidden="true" />
       </button>
-      <div className="map-credit">
-        © GeoBasis-DE /{' '}
-        <a href="https://www.bkg.bund.de/" rel="noreferrer" target="_blank">
-          BKG
-        </a>{' '}
-        2026 ·{' '}
-        <a
-          href="https://creativecommons.org/licenses/by/4.0/"
-          rel="noreferrer"
-          target="_blank"
-        >
-          CC BY 4.0
-        </a>{' '}
-        · Darstellung verändert
-      </div>
+      <div className="map-credit">{mapCredit}</div>
       {mapError ? (
         <p className="map-error" role="status">
           {mapError}
