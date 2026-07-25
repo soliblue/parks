@@ -48,6 +48,16 @@ if [[ -z "$DEPLOYMENT_URL" ]]; then
   exit 1
 fi
 
+ASSET_PATHS=()
+for ASSET_FILE in "$PARKS_ROOT"/dist/assets/*.js "$PARKS_ROOT"/dist/assets/*.css; do
+  [[ -f "$ASSET_FILE" ]] || continue
+  ASSET_PATHS+=("/assets/${ASSET_FILE##*/}")
+done
+if [[ "${#ASSET_PATHS[@]}" -eq 0 ]]; then
+  printf 'No built JavaScript or CSS assets found in dist/assets.\n' >&2
+  exit 1
+fi
+
 verify_json() {
   local url="$1"
   local kind="$2"
@@ -107,6 +117,74 @@ verify_json() {
   return 1
 }
 
+verify_asset() {
+  local base_url="$1"
+  local asset_path="$2"
+  local expected_type
+  local content_type
+  local probe_url
+
+  case "$asset_path" in
+    *.js) expected_type="application/javascript" ;;
+    *.css) expected_type="text/css" ;;
+    *)
+      printf 'Unsupported asset verification type: %s\n' "$asset_path" >&2
+      return 1
+      ;;
+  esac
+
+  for ATTEMPT in {1..20}; do
+    probe_url="${base_url}${asset_path}?deployment=${PARKS_COMMIT_SHA}-${ATTEMPT}"
+    if content_type="$(curl --fail --silent --show-error --location \
+      --header "Origin: $base_url" \
+      --output /dev/null \
+      --write-out '%{content_type}' \
+      "$probe_url")" &&
+      [[ "$content_type" == "$expected_type"* ]]; then
+      if content_type="$(curl --fail --silent --show-error --location \
+        --header "Origin: $base_url" \
+        --output /dev/null \
+        --write-out '%{content_type}' \
+        "${base_url}${asset_path}")" &&
+        [[ "$content_type" == "$expected_type"* ]]; then
+        return 0
+      fi
+    fi
+    sleep 3
+  done
+
+  printf 'Asset verification failed after propagation retries: %s%s\n' \
+    "$base_url" "$asset_path" >&2
+  return 1
+}
+
+verify_missing_asset() {
+  local base_url="$1"
+  local headers
+  local status
+  local cache_control
+
+  for ATTEMPT in {1..20}; do
+    headers="$(curl --silent --show-error --location \
+      --dump-header - \
+      --output /dev/null \
+      "${base_url}/assets/missing-${PARKS_COMMIT_SHA}-${ATTEMPT}.js" |
+      tr -d '\r')"
+    status="$(printf '%s\n' "$headers" |
+      awk '/^HTTP\// { value = $2 } END { print value }')"
+    cache_control="$(printf '%s\n' "$headers" |
+      awk -F ': *' 'tolower($1) == "cache-control" { value = tolower($2) } END { print value }')"
+    if [[ "$status" == "404" && "$cache_control" != *immutable* ]]; then
+      return 0
+    fi
+    sleep 3
+  done
+
+  printf 'Missing-asset verification failed after propagation retries: %s\n' \
+    "$base_url" >&2
+  return 1
+}
+
 declare -A CITY_NAMES=(
   [berlin]="Berlin"
   [vienna]="Wien"
@@ -130,6 +208,10 @@ for URL in "$DEPLOYMENT_URL" "https://parks.soli.blue"; do
       "$URL/data/$CITY/summary.json" \
       summary \
       "${CITY_NAMES[$CITY]}"
+  done
+  verify_missing_asset "$URL"
+  for ASSET_PATH in "${ASSET_PATHS[@]}"; do
+    verify_asset "$URL" "$ASSET_PATH"
   done
 done
 
