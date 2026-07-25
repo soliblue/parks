@@ -15,9 +15,10 @@ The production site is fully static:
    districts for Munich, Stuttgart, Madrid, Barcelona, and Cairo, plus amenity
    observations for all seven newer cities. It writes normalized, deterministic
    snapshots under `public/data/{city}/`.
-2. A separate offline batch combines the global GHSL 2020 population grid with
-   OpenStreetMap pedestrian graphs and writes the harmonized nine-city access
-   comparison metric to `public/data/access.json`.
+2. A separate offline batch builds the same OpenStreetMap green-space layer for
+   every city, then combines it with GHSL 2020 population, OpenStreetMap
+   pedestrian graphs, and CGLS-LC100 2019 tree cover. It writes the harmonized
+   comparison metrics to `public/data/access.json`.
 3. `public/data/cities.json` is the compact city catalogue. The browser fetches
    the selected city's larger files only.
 4. Vite bundles the React app and copies the generated data into `dist/data/`;
@@ -123,11 +124,36 @@ Generated layout:
 | File | Contents |
 | --- | --- |
 | `public/data/cities.json` | City catalogue, map settings, totals, and data paths |
-| `public/data/access.json` | Offline nine-city park-access comparison |
+| `public/data/access.json` | Offline nine-city harmonized comparison metrics |
 | `public/data/{city}/parks.geojson` | Normalized park or public-green geometry |
 | `public/data/{city}/parks-index.json` | Compact search and nearby records |
 | `public/data/{city}/summary.json` | City totals and source freshness |
 | `public/data/{city}/sources.json` | Provenance, coverage, licensing, and retrieval metadata |
+
+## Harmonized city comparison
+
+The leaderboard does not compare the cities' native municipal and
+community-mapped inventories. Those local layers remain available for map,
+search, district, and amenity exploration, but differing municipal definitions
+would make them unsuitable as common comparison inputs.
+
+Instead, every city uses the same OpenStreetMap definition:
+`leisure=park`, `leisure=nature_reserve`, `natural=wood`, and
+`landuse=forest`; `leisure=garden` is included only when access is explicitly
+public and no fee is tagged. The geometries are clipped to the configured
+administrative boundary and dissolved so overlapping ways and relations are
+counted once. All core-class components contribute to mapped green-land area,
+regardless of access. For routed access, fee-tagged or explicitly restricted
+geometry is removed; parks, nature reserves, and public gardens qualify by
+class, while woods and forests require an explicit public-access tag. The
+0.5 ha minimum applies only to that routed subset. Green-land area is therefore
+not the same as publicly accessible park area.
+
+The comparison then reports:
+
+- population within the 805 m pedestrian-network access threshold;
+- harmonized green-space share and square metres per GHSL 2020 resident; and
+- modeled tree-cover share from CGLS-LC100 2019.
 
 ## Ten-minute access metric
 
@@ -152,6 +178,20 @@ population-to-network snap rule.
 This city-level metric is distinct from the 5/10/15-minute rings shown after a
 user selects a point. Those rings remain straight-line estimates based on an
 assumed walking speed; they are not routes.
+
+## Tree-cover metric
+
+Tree-cover share uses the area-weighted 0–100% Tree Cover Fraction from
+[Copernicus Global Land Service CGLS-LC100 Collection 3, epoch 2019](https://zenodo.org/records/3939050).
+Its land-only denominator uses the matching Permanent Water Cover Fraction.
+Both rasters are 100 m products, and boundary pixels are selected by pixel
+centre. The data is licensed under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+
+This is a modeled regional comparison, not a street-tree census. The product's
+global validation reports a mean absolute error of 8.9 percentage points for
+tree-cover fraction, so small differences between cities should not be treated
+as definitive rankings.
 
 The Berlin datasets are published under
 [Datenlizenz Deutschland – Zero – Version 2.0](https://www.govdata.de/dl-de/zero-2-0).

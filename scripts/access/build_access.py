@@ -33,7 +33,7 @@ import numpy as np
 import osmium
 import rasterio
 import shapely
-from pyproj import Transformer
+from pyproj import Geod, Transformer
 from rasterio.mask import mask as raster_mask
 from scipy.sparse import coo_matrix, csr_matrix, hstack, vstack
 from scipy.sparse.csgraph import dijkstra
@@ -52,6 +52,7 @@ from shapely.ops import transform as transform_geometry
 
 SCHEMA_VERSION = 1
 GRAPH_CACHE_VERSION = 2
+GREEN_INVENTORY_VERSION = 2
 POPULATION_YEAR = 2020
 THRESHOLD_MINUTES = 10
 THRESHOLD_METERS = 805.0
@@ -72,6 +73,40 @@ JRC_DATASET_URL = (
     "https://data.jrc.ec.europa.eu/dataset/"
     "2ff68a52-5b5b-4a22-8f40-c41da8332cfe"
 )
+CGLS_RECORD_URL = "https://zenodo.org/records/3939050"
+CGLS_TREE_URL = (
+    "https://zenodo.org/api/records/3939050/files/"
+    "PROBAV_LC100_global_v3.0.1_2019-nrt_"
+    "Tree-CoverFraction-layer_EPSG-4326.tif/content"
+)
+CGLS_WATER_URL = (
+    "https://zenodo.org/api/records/3939050/files/"
+    "PROBAV_LC100_global_v3.0.1_2019-nrt_"
+    "PermanentWater-CoverFraction-layer_EPSG-4326.tif/content"
+)
+CGLS_TREE_MD5 = "37b7914dd88503a41b88f6445700e425"
+CGLS_WATER_MD5 = "6f1b2d8efeb5cde02e99bfc183eb4888"
+CGLS_OBSERVATION_YEAR = 2019
+CGLS_RESOLUTION_METERS = 100
+CGLS_CACHE_VERSION = 1
+GEOD = Geod(ellps="WGS84")
+
+GREEN_CLASSES = (
+    ("leisure", "park"),
+    ("leisure", "nature_reserve"),
+    ("natural", "wood"),
+    ("landuse", "forest"),
+)
+GREEN_EXCLUDED_ACCESS = {
+    "no",
+    "private",
+    "customers",
+    "members",
+    "permit",
+    "agricultural",
+    "forestry",
+}
+GREEN_EXPLICIT_PUBLIC_ACCESS = {"yes", "permissive", "designated"}
 
 
 @dataclass(frozen=True)
@@ -281,12 +316,19 @@ class WalkGraph:
 class ParkInventory:
     geometries: list[Any]
     union: Any
+    all_union: Any
+    access_all_union: Any
     input_count: int
+    access_input_count: int
     eligible_count: int
     below_minimum_area_count: int
     invalid_or_empty_count: int
+    excluded_access_count: int
+    without_public_access_evidence_count: int
+    class_counts: dict[str, int]
+    access_class_counts: dict[str, int]
     source_sha256: str
-    source_generated_at: str | None
+    definition_version: int
 
 
 def utc_now() -> str:
@@ -321,6 +363,20 @@ def atomic_write_json(path: Path, value: Any) -> None:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             json.dump(value, handle, ensure_ascii=False, indent=2)
             handle.write("\n")
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def atomic_write_bytes(path: Path, value: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(value)
         os.replace(temporary_path, path)
     finally:
         temporary_path.unlink(missing_ok=True)
@@ -621,30 +677,201 @@ def load_or_extract_osm_boundary(
     return geometry
 
 
-def load_parks(
-    path: Path, transformer: Transformer, projected_boundary: Any
-) -> ParkInventory:
-    if not path.exists():
-        raise FileNotFoundError(
-            f"Missing {path}; run the multi-city park refresh before access analysis"
-        )
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    features = payload.get("features")
-    if not isinstance(features, list):
-        raise RuntimeError(f"{path}: parks data is not a FeatureCollection")
+def comparison_green_class(tags: Any) -> str | None:
+    for key, value in GREEN_CLASSES:
+        if tags.get(key) == value:
+            return f"{key}={value}"
+    if tags.get("leisure") == "garden":
+        return "leisure=garden"
+    return None
 
-    eligible: list[Any] = []
-    below_minimum = 0
+
+def is_routable_green_class(green_class: str, access: str | None) -> bool:
+    return green_class in {
+        "leisure=park",
+        "leisure=nature_reserve",
+        "leisure=garden",
+    } or access in GREEN_EXPLICIT_PUBLIC_ACCESS
+
+
+def area_bounds(item: Any) -> tuple[float, float, float, float] | None:
+    min_lon = math.inf
+    min_lat = math.inf
+    max_lon = -math.inf
+    max_lat = -math.inf
+    try:
+        for ring in item.outer_rings():
+            for node in ring:
+                if not node.location.valid():
+                    continue
+                min_lon = min(min_lon, node.location.lon)
+                min_lat = min(min_lat, node.location.lat)
+                max_lon = max(max_lon, node.location.lon)
+                max_lat = max(max_lat, node.location.lat)
+    except (AttributeError, RuntimeError, ValueError):
+        return None
+    if not math.isfinite(min_lon):
+        return None
+    return min_lon, min_lat, max_lon, max_lat
+
+
+def bounds_intersect(
+    left: tuple[float, float, float, float],
+    right: tuple[float, float, float, float],
+) -> bool:
+    return not (
+        left[2] < right[0]
+        or left[0] > right[2]
+        or left[3] < right[1]
+        or left[1] > right[3]
+    )
+
+
+def polygon_components(geometry: Any) -> list[Any]:
+    if geometry.is_empty:
+        return []
+    if isinstance(geometry, Polygon):
+        return [geometry]
+    if isinstance(geometry, (MultiPolygon, GeometryCollection)):
+        components: list[Any] = []
+        for part in geometry.geoms:
+            components.extend(polygon_components(part))
+        return components
+    return []
+
+
+def inventory_from_unions(
+    *,
+    all_union: Any,
+    access_union: Any,
+    input_count: int,
+    access_input_count: int,
+    invalid_or_empty_count: int,
+    excluded_access_count: int,
+    without_public_access_evidence_count: int,
+    class_counts: dict[str, int],
+    access_class_counts: dict[str, int],
+    source_sha256: str,
+) -> ParkInventory:
+    components = polygon_components(polygonal_only(make_valid(access_union)))
+    eligible = [
+        component
+        for component in components
+        if component.area >= MINIMUM_PARK_AREA_M2
+    ]
+    if not eligible:
+        raise RuntimeError("No harmonized green spaces meet the 0.5 ha rule")
+    eligible_union = polygonal_only(make_valid(union_all(eligible)))
+    return ParkInventory(
+        geometries=eligible,
+        union=eligible_union,
+        all_union=polygonal_only(make_valid(all_union)),
+        access_all_union=polygonal_only(make_valid(access_union)),
+        input_count=input_count,
+        access_input_count=access_input_count,
+        eligible_count=len(eligible),
+        below_minimum_area_count=len(components) - len(eligible),
+        invalid_or_empty_count=invalid_or_empty_count,
+        excluded_access_count=excluded_access_count,
+        without_public_access_evidence_count=(
+            without_public_access_evidence_count
+        ),
+        class_counts=class_counts,
+        access_class_counts=access_class_counts,
+        source_sha256=source_sha256,
+        definition_version=GREEN_INVENTORY_VERSION,
+    )
+
+
+def comparison_inventory_cache_key(
+    *,
+    pbf_sha256: str,
+    boundary_sha256: str,
+    projected_crs: str,
+) -> str:
+    material = {
+        "version": GREEN_INVENTORY_VERSION,
+        "pbfSha256": pbf_sha256,
+        "boundaryGeometrySha256": boundary_sha256,
+        "projectedCrs": projected_crs,
+        "classes": list(GREEN_CLASSES),
+        "excludedAccess": sorted(GREEN_EXCLUDED_ACCESS),
+        "explicitPublicAccess": sorted(GREEN_EXPLICIT_PUBLIC_ACCESS),
+        "gardenRule": "explicit-public-no-fee",
+        "feeRule": "exclude-fee-yes",
+        "restrictionPrecedence": "restricted-area-subtracted-after-union",
+        "areaRule": "core-classes-regardless-access-public-no-fee-gardens",
+        "candidateCounting": "boundary-bbox-intersection",
+        "routingRule": (
+            "park-nature-reserve-public-garden-or-explicit-public-woodland"
+        ),
+        "minimumAccessAreaM2": MINIMUM_PARK_AREA_M2,
+        "shapelyVersion": shapely.__version__,
+    }
+    encoded = json.dumps(
+        material, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:20]
+
+
+def extract_comparison_green(
+    *,
+    pbf: DownloadRecord,
+    geographic_boundary: Any,
+    projected_boundary: Any,
+    transformer: Transformer,
+) -> ParkInventory:
+    factory = osmium.geom.GeoJSONFactory()
+    boundary_bounds = geographic_boundary.bounds
+    projected_parts: list[Any] = []
+    access_projected_parts: list[Any] = []
+    excluded_projected_parts: list[Any] = []
+    input_count = 0
+    access_input_count = 0
     invalid_or_empty = 0
-    for feature in features:
-        geometry_value = feature.get("geometry")
-        if not geometry_value:
-            invalid_or_empty += 1
+    excluded_access = 0
+    without_public_access_evidence = 0
+    class_counts: dict[str, int] = {}
+    access_class_counts: dict[str, int] = {}
+
+    for item in (
+        osmium.FileProcessor(str(pbf.path)).with_locations().with_areas()
+    ):
+        if not item.is_area():
             continue
+        green_class = comparison_green_class(item.tags)
+        if green_class is None:
+            continue
+        cheap_bounds = area_bounds(item)
+        if cheap_bounds is None:
+            continue
+        if not bounds_intersect(cheap_bounds, boundary_bounds):
+            continue
+        input_count += 1
+        access = item.tags.get("access")
+        hard_restricted = (
+            access in GREEN_EXCLUDED_ACCESS
+            or item.tags.get("fee") == "yes"
+        )
+        garden_without_public_access = (
+            green_class == "leisure=garden"
+            and access not in GREEN_EXPLICIT_PUBLIC_ACCESS
+        )
         try:
-            geographic = polygonal_only(make_valid(shape(geometry_value)))
+            geographic = polygonal_only(
+                make_valid(from_geojson(factory.create_multipolygon(item)))
+            )
+            if geographic.is_empty or not geographic.intersects(
+                geographic_boundary
+            ):
+                continue
+            geographic = polygonal_only(
+                make_valid(geographic.intersection(geographic_boundary))
+            )
             projected = polygonal_only(
-                make_valid(transform_geometry(transformer.transform, geographic))
+                make_valid(
+                    transform_geometry(transformer.transform, geographic)
+                )
             )
             projected = polygonal_only(
                 make_valid(projected.intersection(projected_boundary))
@@ -655,24 +882,309 @@ def load_parks(
         if projected.is_empty or projected.area <= 0:
             invalid_or_empty += 1
             continue
-        if projected.area < MINIMUM_PARK_AREA_M2:
-            below_minimum += 1
+        if hard_restricted:
+            excluded_access += 1
+            excluded_projected_parts.append(projected)
+        if garden_without_public_access or (
+            green_class == "leisure=garden"
+            and item.tags.get("fee") == "yes"
+        ):
             continue
-        eligible.append(projected)
+        projected_parts.append(projected)
+        class_counts[green_class] = class_counts.get(green_class, 0) + 1
+        if hard_restricted:
+            continue
+        if is_routable_green_class(green_class, access):
+            access_projected_parts.append(projected)
+            access_input_count += 1
+            access_class_counts[green_class] = (
+                access_class_counts.get(green_class, 0) + 1
+            )
+        else:
+            without_public_access_evidence += 1
 
-    if not eligible:
-        raise RuntimeError(f"{path}: no parks meet the 0.5 ha eligibility rule")
-    park_union = make_valid(union_all(eligible))
-    return ParkInventory(
-        geometries=eligible,
-        union=park_union,
-        input_count=len(features),
-        eligible_count=len(eligible),
-        below_minimum_area_count=below_minimum,
-        invalid_or_empty_count=invalid_or_empty,
-        source_sha256=file_sha256(path),
-        source_generated_at=payload.get("generatedAt"),
+    if not projected_parts:
+        raise RuntimeError(f"{pbf.path}: no harmonized green-space polygons")
+    if not access_projected_parts:
+        raise RuntimeError(
+            f"{pbf.path}: no harmonized publicly routable green-space polygons"
+        )
+    excluded_union = (
+        polygonal_only(make_valid(union_all(excluded_projected_parts)))
+        if excluded_projected_parts
+        else GeometryCollection()
     )
+    all_union = polygonal_only(make_valid(union_all(projected_parts)))
+    access_union = polygonal_only(
+        make_valid(
+            union_all(access_projected_parts).difference(excluded_union)
+        )
+    )
+    return inventory_from_unions(
+        all_union=all_union,
+        access_union=access_union,
+        input_count=input_count,
+        access_input_count=access_input_count,
+        invalid_or_empty_count=invalid_or_empty,
+        excluded_access_count=excluded_access,
+        without_public_access_evidence_count=(
+            without_public_access_evidence
+        ),
+        class_counts=class_counts,
+        access_class_counts=access_class_counts,
+        source_sha256=pbf.sha256,
+    )
+
+
+def prune_stale_inventory_caches(active_path: Path) -> None:
+    city_id = active_path.name.split("-", 1)[0]
+    older = sorted(
+        (
+            path
+            for path in active_path.parent.glob(f"{city_id}-*.wkb")
+            if path != active_path and ".access." not in path.name
+        ),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for stale_path in older[1:]:
+        stale_path.unlink(missing_ok=True)
+        stale_path.with_suffix(".access.wkb").unlink(missing_ok=True)
+        stale_path.with_suffix(".meta.json").unlink(missing_ok=True)
+
+
+def load_or_build_comparison_inventory(
+    *,
+    city: CityConfig,
+    pbf: DownloadRecord,
+    geographic_boundary: Any,
+    projected_boundary: Any,
+    boundary_sha256: str,
+    transformer: Transformer,
+    cache_directory: Path,
+) -> ParkInventory:
+    key = comparison_inventory_cache_key(
+        pbf_sha256=pbf.sha256,
+        boundary_sha256=boundary_sha256,
+        projected_crs=city.projected_crs,
+    )
+    cache_path = cache_directory / f"{city.id}-{key}.wkb"
+    access_cache_path = cache_path.with_suffix(".access.wkb")
+    metadata_path = cache_path.with_suffix(".meta.json")
+    if (
+        cache_path.exists()
+        and access_cache_path.exists()
+        and metadata_path.exists()
+    ):
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if metadata.get("cacheKey") == key:
+            print(
+                f"  loading cached harmonized green inventory "
+                f"{cache_path.name}",
+                flush=True,
+            )
+            inventory = inventory_from_unions(
+                all_union=shapely.from_wkb(cache_path.read_bytes()),
+                access_union=shapely.from_wkb(
+                    access_cache_path.read_bytes()
+                ),
+                input_count=int(metadata["inputCount"]),
+                access_input_count=int(metadata["accessInputCount"]),
+                invalid_or_empty_count=int(metadata["invalidOrEmptyCount"]),
+                excluded_access_count=int(metadata["excludedAccessCount"]),
+                without_public_access_evidence_count=int(
+                    metadata["withoutPublicAccessEvidenceCount"]
+                ),
+                class_counts={
+                    str(class_name): int(count)
+                    for class_name, count in metadata["classCounts"].items()
+                },
+                access_class_counts={
+                    str(class_name): int(count)
+                    for class_name, count in metadata[
+                        "accessClassCounts"
+                    ].items()
+                },
+                source_sha256=pbf.sha256,
+            )
+            prune_stale_inventory_caches(cache_path)
+            return inventory
+
+    print(f"  extracting harmonized green spaces from {pbf.path.name}", flush=True)
+    inventory = extract_comparison_green(
+        pbf=pbf,
+        geographic_boundary=geographic_boundary,
+        projected_boundary=projected_boundary,
+        transformer=transformer,
+    )
+    atomic_write_bytes(
+        cache_path,
+        shapely.to_wkb(inventory.all_union, output_dimension=2),
+    )
+    atomic_write_bytes(
+        access_cache_path,
+        shapely.to_wkb(inventory.access_all_union, output_dimension=2),
+    )
+    atomic_write_json(
+        metadata_path,
+        {
+            "cacheKey": key,
+            "pbfSha256": pbf.sha256,
+            "boundaryGeometrySha256": boundary_sha256,
+            "projectedCrs": city.projected_crs,
+            "definitionVersion": GREEN_INVENTORY_VERSION,
+            "inputCount": inventory.input_count,
+            "accessInputCount": inventory.access_input_count,
+            "invalidOrEmptyCount": inventory.invalid_or_empty_count,
+            "excludedAccessCount": inventory.excluded_access_count,
+            "withoutPublicAccessEvidenceCount": (
+                inventory.without_public_access_evidence_count
+            ),
+            "classCounts": inventory.class_counts,
+            "accessClassCounts": inventory.access_class_counts,
+            "generatedAt": utc_now(),
+        },
+    )
+    prune_stale_inventory_caches(cache_path)
+    return inventory
+
+
+def remote_raster_mask(
+    url: str, geographic_boundary: Any
+) -> tuple[np.ma.MaskedArray, Any]:
+    for attempt in range(4):
+        try:
+            with rasterio.open(url) as dataset:
+                values, transform = raster_mask(
+                    dataset,
+                    [mapping(geographic_boundary)],
+                    crop=True,
+                    filled=False,
+                    all_touched=False,
+                )
+            return np.ma.asarray(values[0]), transform
+        except Exception:
+            if attempt == 3:
+                raise
+            time.sleep(1 + attempt)
+    raise RuntimeError("Unreachable raster retry state")
+
+
+def load_or_calculate_tree_cover(
+    *,
+    city: CityConfig,
+    geographic_boundary: Any,
+    boundary_sha256: str,
+    cache_directory: Path,
+) -> dict[str, Any]:
+    cache_key_material = json.dumps(
+        {
+            "version": CGLS_CACHE_VERSION,
+            "boundaryGeometrySha256": boundary_sha256,
+            "treeMd5": CGLS_TREE_MD5,
+            "waterMd5": CGLS_WATER_MD5,
+            "mask": "pixel-centre",
+            "denominator": "land-area",
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    key = hashlib.sha256(cache_key_material).hexdigest()[:20]
+    cache_path = cache_directory / f"{city.id}-{key}.json"
+    if cache_path.exists():
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+        if cached.get("cacheKey") == key:
+            print(
+                f"  loading cached tree-cover estimate {cache_path.name}",
+                flush=True,
+            )
+            return cached["metric"]
+
+    print("  calculating harmonized 2019 tree-cover estimate", flush=True)
+    cache_directory.mkdir(parents=True, exist_ok=True)
+    with rasterio.Env(
+        GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
+        GDAL_HTTP_CONNECTTIMEOUT="20",
+        GDAL_HTTP_TIMEOUT="60",
+        GDAL_HTTP_MAX_RETRY="5",
+        GDAL_HTTP_RETRY_DELAY="1",
+    ):
+        tree, transform = remote_raster_mask(
+            CGLS_TREE_URL, geographic_boundary
+        )
+        water, water_transform = remote_raster_mask(
+            CGLS_WATER_URL, geographic_boundary
+        )
+    if tree.shape != water.shape or transform != water_transform:
+        raise RuntimeError(
+            f"{city.name}: CGLS tree and water grids do not align"
+        )
+
+    tree_values = np.asarray(tree.data)
+    water_values = np.asarray(water.data)
+    valid = (~np.ma.getmaskarray(tree)) & (~np.ma.getmaskarray(water))
+    valid &= (tree_values >= 0) & (tree_values <= 100)
+    valid &= (water_values >= 0) & (water_values <= 100)
+    if not np.any(valid):
+        raise RuntimeError(f"{city.name}: no valid CGLS pixels")
+
+    row_count, column_count = tree.shape
+    row_area_m2 = np.empty(row_count, dtype=np.float64)
+    x1 = transform.c
+    x2 = transform.c + transform.a
+    for row in range(row_count):
+        y1 = transform.f + row * transform.e
+        y2 = y1 + transform.e
+        signed_area, _ = GEOD.polygon_area_perimeter(
+            [x1, x2, x2, x1],
+            [y1, y1, y2, y2],
+        )
+        row_area_m2[row] = abs(signed_area)
+    pixel_area_m2 = np.broadcast_to(
+        row_area_m2[:, None], (row_count, column_count)
+    )
+    tree_fraction = tree_values.astype(np.float64) / 100.0
+    water_fraction = water_values.astype(np.float64) / 100.0
+    tree_area_m2 = float(
+        np.sum(tree_fraction[valid] * pixel_area_m2[valid])
+    )
+    land_area_m2 = float(
+        np.sum((1.0 - water_fraction[valid]) * pixel_area_m2[valid])
+    )
+    if land_area_m2 <= 0:
+        raise RuntimeError(f"{city.name}: CGLS land denominator is zero")
+    metric = {
+        "areaM2": int(round(tree_area_m2)),
+        "landAreaM2": int(round(land_area_m2)),
+        "sharePercent": round((tree_area_m2 / land_area_m2) * 100, 1),
+        "observationYear": CGLS_OBSERVATION_YEAR,
+        "resolutionMeters": CGLS_RESOLUTION_METERS,
+        "denominator": "land-area",
+    }
+    atomic_write_json(
+        cache_path,
+        {
+            "cacheKey": key,
+            "boundaryGeometrySha256": boundary_sha256,
+            "treeMd5": CGLS_TREE_MD5,
+            "waterMd5": CGLS_WATER_MD5,
+            "validPixelCount": int(np.count_nonzero(valid)),
+            "metric": metric,
+            "generatedAt": utc_now(),
+        },
+    )
+    older = sorted(
+        (
+            path
+            for path in cache_directory.glob(f"{city.id}-*.json")
+            if path != cache_path
+        ),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for stale_path in older[1:]:
+        stale_path.unlink(missing_ok=True)
+    return metric
 
 
 EXCLUDED_HIGHWAYS = {
@@ -1339,6 +1851,45 @@ def validate_city_result(city: CityConfig, result: dict[str, Any]) -> None:
         raise RuntimeError(
             f"{city.name}: share {share} does not match {expected_share}"
         )
+    green_space = result["greenSpace"]
+    green_area = green_space["areaM2"]
+    city_area = green_space["cityAreaM2"]
+    if not 0 < green_area <= city_area:
+        raise RuntimeError(
+            f"{city.name}: invalid green area {green_area:,}/{city_area:,}"
+        )
+    expected_green_share = round((green_area / city_area) * 100, 1)
+    if green_space["sharePercent"] != expected_green_share:
+        raise RuntimeError(
+            f"{city.name}: green share {green_space['sharePercent']} "
+            f"does not match {expected_green_share}"
+        )
+    expected_per_resident = round(green_area / total, 1)
+    if green_space["m2PerResident"] != expected_per_resident:
+        raise RuntimeError(
+            f"{city.name}: green area per resident "
+            f"{green_space['m2PerResident']} does not match "
+            f"{expected_per_resident}"
+        )
+    tree_cover = result["treeCover"]
+    if not 0 <= tree_cover["sharePercent"] <= 100:
+        raise RuntimeError(
+            f"{city.name}: invalid tree-cover share "
+            f"{tree_cover['sharePercent']}"
+        )
+    if not 0 <= tree_cover["areaM2"] <= tree_cover["landAreaM2"]:
+        raise RuntimeError(
+            f"{city.name}: invalid tree-cover area "
+            f"{tree_cover['areaM2']:,}/{tree_cover['landAreaM2']:,}"
+        )
+    expected_tree_share = round(
+        (tree_cover["areaM2"] / tree_cover["landAreaM2"]) * 100, 1
+    )
+    if tree_cover["sharePercent"] != expected_tree_share:
+        raise RuntimeError(
+            f"{city.name}: tree-cover share {tree_cover['sharePercent']} "
+            f"does not match {expected_tree_share}"
+        )
     guardrails = result["guardrails"]
     if guardrails["eligibleParkCount"] < 20:
         raise RuntimeError(
@@ -1405,6 +1956,8 @@ def main() -> int:
     )
     input_cache = cache_directory / "inputs"
     graph_cache = cache_directory / "graphs"
+    inventory_cache = cache_directory / "inventories"
+    tree_cover_cache = cache_directory / "tree-cover"
     started = time.monotonic()
 
     generated_at = utc_now()
@@ -1443,12 +1996,39 @@ def main() -> int:
                 record=archive,
             )
         )
+    sources.extend(
+        [
+            {
+                "id": "cgls-lc100-2019-tree-cover-fraction",
+                "title": (
+                    "Copernicus Global Land Service LC100 2019 — "
+                    "Tree Cover Fraction"
+                ),
+                "role": "tree-cover",
+                "url": CGLS_TREE_URL,
+                "metadataUrl": CGLS_RECORD_URL,
+                "license": "Creative Commons Attribution 4.0",
+                "md5": CGLS_TREE_MD5,
+            },
+            {
+                "id": "cgls-lc100-2019-permanent-water-fraction",
+                "title": (
+                    "Copernicus Global Land Service LC100 2019 — "
+                    "Permanent Water Cover Fraction"
+                ),
+                "role": "land-mask",
+                "url": CGLS_WATER_URL,
+                "metadataUrl": CGLS_RECORD_URL,
+                "license": "Creative Commons Attribution 4.0",
+                "md5": CGLS_WATER_MD5,
+            },
+        ]
+    )
     city_results: dict[str, Any] = {}
 
     for city in CITY_CONFIGS:
         city_started = time.monotonic()
         print(f"{city.name}:", flush=True)
-        parks_path = project_root / city.parks_relative_path
         pbf_path = input_cache / f"{city.id}.osm.pbf"
         prime_shared_pbf_cache(project_root, city, pbf_path)
         pbf_record, _ = download_cached(
@@ -1482,11 +2062,25 @@ def main() -> int:
         else:
             raise RuntimeError(f"{city.name}: no city boundary configured")
         boundary_geometry_sha256 = geometry_sha256(geographic_boundary)
-        parks = load_parks(parks_path, transformer, projected_boundary)
+        parks = load_or_build_comparison_inventory(
+            city=city,
+            pbf=pbf_record,
+            geographic_boundary=geographic_boundary,
+            projected_boundary=projected_boundary,
+            boundary_sha256=boundary_geometry_sha256,
+            transformer=transformer,
+            cache_directory=inventory_cache,
+        )
         print(
-            f"  {parks.eligible_count:,}/{parks.input_count:,} parks meet "
-            "the harmonized 0.5 ha rule",
+            f"  {parks.eligible_count:,} dissolved green spaces meet "
+            "the harmonized 0.5 ha access rule",
             flush=True,
+        )
+        tree_cover = load_or_calculate_tree_cover(
+            city=city,
+            geographic_boundary=geographic_boundary,
+            boundary_sha256=boundary_geometry_sha256,
+            cache_directory=tree_cover_cache,
         )
         graph, _graph_was_cached = build_or_load_walk_graph(
             city=city,
@@ -1549,6 +2143,19 @@ def main() -> int:
         share_percent = round(
             (population_within / population_total) * 100, 1
         )
+        green_area_m2 = int(round(parks.all_union.area))
+        city_area_m2 = int(round(projected_boundary.area))
+        green_space = {
+            "areaM2": green_area_m2,
+            "cityAreaM2": city_area_m2,
+            "sharePercent": round(
+                (green_area_m2 / city_area_m2) * 100, 1
+            ),
+            "m2PerResident": round(
+                green_area_m2 / population_total, 1
+            ),
+            "definitionVersion": GREEN_INVENTORY_VERSION,
+        }
         guardrails = {
             "populationGridResolutionMeters": 100,
             "populationModel": (
@@ -1564,9 +2171,26 @@ def main() -> int:
             "maximumPopulationNetworkSnapMeters": int(
                 MAX_POPULATION_SNAP_METERS
             ),
-            "parkInputFeatureCount": parks.input_count,
-            "parksBelowMinimumArea": parks.below_minimum_area_count,
-            "parksWithInvalidOrEmptyGeometry": parks.invalid_or_empty_count,
+            "greenInputFeatureCount": parks.input_count,
+            "greenAccessInputFeatureCount": parks.access_input_count,
+            "greenDissolvedComponentCount": (
+                parks.eligible_count + parks.below_minimum_area_count
+            ),
+            "greenComponentsBelowMinimumArea": (
+                parks.below_minimum_area_count
+            ),
+            "greenFeaturesWithInvalidOrEmptyGeometry": (
+                parks.invalid_or_empty_count
+            ),
+            "greenFeaturesExcludedByAccessRule": (
+                parks.excluded_access_count
+            ),
+            "greenFeaturesWithoutPublicAccessEvidence": (
+                parks.without_public_access_evidence_count
+            ),
+            "greenInputClassCounts": parks.class_counts,
+            "greenAccessInputClassCounts": parks.access_class_counts,
+            "routedEligibleGreenAreaM2": int(round(parks.union.area)),
             "networkNodeCount": int(graph.x.size),
             "networkDirectedEdgeCount": int(graph.matrix.nnz),
             **park_guardrails,
@@ -1581,10 +2205,12 @@ def main() -> int:
             "thresholdMeters": int(THRESHOLD_METERS),
             "method": "walking-network",
             "generatedAt": generated_at,
+            "greenSpace": green_space,
+            "treeCover": tree_cover,
             "note": (
                 "Modellschätzung auf Basis des GHSL-Bevölkerungsrasters 2020 "
-                "und des "
-                "OpenStreetMap-Fußwegenetzes; keine individuelle "
+                "und harmonisierter OpenStreetMap-Grünflächen; keine "
+                "individuelle "
                 "Erreichbarkeitsgarantie."
             ),
             "guardrails": guardrails,
@@ -1593,19 +2219,39 @@ def main() -> int:
         city_results[city.id] = result
         sources.extend(
             [
-                source_record(
-                    source_id=f"{city.id}-parks",
-                    title=f"Public green-space inventory — {city.name}",
-                    role="parks",
-                    url=city.parks_relative_path,
-                    metadata_url=None,
-                    license_name=(
-                        "See the city-specific generated source manifest"
+                {
+                    **source_record(
+                        source_id=f"{city.id}-comparison-green",
+                        title=(
+                            "Harmonized OpenStreetMap green-space "
+                            f"inventory — {city.name}"
+                        ),
+                        role="comparison-green-space",
+                        url=city.osm_url,
+                        metadata_url=(
+                            "https://www.openstreetmap.org/copyright"
+                        ),
+                        license_name=(
+                            "Open Data Commons Open Database License 1.0"
+                        ),
+                        record=pbf_record,
+                        city=city.id,
                     ),
-                    sha256=parks.source_sha256,
-                    generated_at=parks.source_generated_at,
-                    city=city.id,
-                ),
+                    "definitionVersion": GREEN_INVENTORY_VERSION,
+                    "includedClasses": [
+                        f"{key}={value}" for key, value in GREEN_CLASSES
+                    ]
+                    + ["leisure=garden (explicit public access, no fee)"],
+                    "routingExcludedRules": [
+                        "access=no/private/customers/members/permit/"
+                        "agricultural/forestry",
+                        "fee=yes",
+                    ],
+                    "routingRule": (
+                        "parks, nature reserves and explicit-public gardens; "
+                        "woods and forests only with explicit public access"
+                    ),
+                },
                 source_record(
                     source_id=f"{city.id}-boundary",
                     title=city.boundary_title,
@@ -1636,7 +2282,9 @@ def main() -> int:
         )
         print(
             f"  {share_percent:.1f}% ({population_within:,}/"
-            f"{population_total:,}) in {time.monotonic() - city_started:.1f}s",
+            f"{population_total:,}); {green_space['sharePercent']:.1f}% green; "
+            f"{tree_cover['sharePercent']:.1f}% tree cover in "
+            f"{time.monotonic() - city_started:.1f}s",
             flush=True,
         )
         del graph, node_tree, node_distances, cell_coordinates, cell_population
@@ -1648,12 +2296,14 @@ def main() -> int:
         "methodology": {
             "metric": (
                 "Share of resident population whose 100 m population-cell "
-                "centre can reach an eligible mapped park access point "
+                "centre can reach an eligible harmonized green-space access "
+                "point "
                 "within 805 m on the pedestrian network."
             ),
             "numerator": (
                 "GHSL GHS-POP 2020 resident population in cells with snapped "
-                "pedestrian-network distance to an eligible park of at most "
+                "pedestrian-network distance to an eligible green space of "
+                "at most "
                 "805 m."
             ),
             "denominator": (
@@ -1661,16 +2311,36 @@ def main() -> int:
                 "fall inside the configured administrative boundary."
             ),
             "parkEligibility": (
-                "Published city green-space polygons, excluding features "
-                "explicitly marked private or inaccessible where access tags "
-                "exist, clipped to the administrative boundary and measuring "
-                "at least 0.5 ha in a local metric projection."
+                "The same OpenStreetMap classes in every city: leisure=park, "
+                "leisure=nature_reserve, natural=wood and landuse=forest, "
+                "plus leisure=garden only with explicit public access and no "
+                "fee. For access routing, fee=yes, private or inaccessible "
+                "geometry is excluded and takes precedence over overlapping "
+                "unrestricted geometry. Parks, nature reserves and public "
+                "gardens qualify by class; woods and forests require explicit "
+                "public-access tags. Geometries are clipped and dissolved, and "
+                "routed components must measure at least 0.5 ha."
+            ),
+            "greenArea": (
+                "Harmonized green-space area is the dissolved area of the "
+                "same OpenStreetMap definition inside the administrative "
+                "boundary. Share uses total administrative area; square "
+                "metres per resident uses the GHSL 2020 population. Mapped "
+                "wood or forest contributes even when public access is not "
+                "established, so this is a land-cover indicator rather than "
+                "an accessible-park total."
+            ),
+            "treeCover": (
+                "Tree-cover share is the area-weighted CGLS-LC100 2019 Tree "
+                "Cover Fraction divided by land area from the matching "
+                "Permanent Water Cover Fraction. Both rasters are 100 m; "
+                "boundary pixels are selected by pixel centre."
             ),
             "entranceModel": (
-                "Mapped pedestrian nodes inside parks and network edges "
-                "crossing park boundaries are primary access. Mapped OSM "
-                "entrances within 30 m are also accepted. A park without those "
-                "signals receives a generated nearest-perimeter access only "
+                "Mapped pedestrian nodes inside green spaces and network edges "
+                "crossing their boundaries are primary access. Mapped OSM "
+                "entrances within 30 m are also accepted. A green space without "
+                "those signals receives a generated nearest-perimeter access only "
                 "when a pedestrian node is within 61 m; otherwise it is "
                 "excluded from routed access."
             ),
@@ -1685,9 +2355,11 @@ def main() -> int:
                 "straight connector distance."
             ),
             "uncertainty": (
-                "Population is the harmonized GHSL 2020 dasymetric model, park "
-                "inventory coverage differs by city, and OSM access/barrier "
-                "tags can be incomplete. "
+                "Population is the harmonized GHSL 2020 dasymetric model; OSM "
+                "mapping and access/barrier tags can be incomplete. CGLS tree "
+                "cover is a modelled 2019 estimate at 100 m resolution, not a "
+                "street-tree census, and has documented global mean absolute "
+                "error of 8.9 percentage points. "
                 "Results are comparative planning estimates, not accessibility "
                 "guarantees."
             ),
@@ -1701,6 +2373,74 @@ def main() -> int:
             previous_output = json.loads(output_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             previous_output = None
+
+    def count_total(value: Any) -> int | None:
+        if not isinstance(value, dict):
+            return None
+        counts = list(value.values())
+        if not counts or not all(
+            isinstance(count, int) and count >= 0 for count in counts
+        ):
+            return None
+        return sum(counts)
+
+    if previous_output is not None:
+        for city_id, result in city_results.items():
+            previous_result = previous_output.get("cities", {}).get(city_id)
+            if not isinstance(previous_result, dict):
+                continue
+            previous_green = previous_result.get("greenSpace")
+            if (
+                not isinstance(previous_green, dict)
+                or previous_green.get("definitionVersion")
+                != GREEN_INVENTORY_VERSION
+            ):
+                continue
+            previous_guardrails = previous_result.get("guardrails", {})
+            comparisons = (
+                (
+                    "green area",
+                    previous_green.get("areaM2"),
+                    result["greenSpace"]["areaM2"],
+                ),
+                (
+                    "eligible access components",
+                    previous_guardrails.get("eligibleParkCount"),
+                    result["guardrails"]["eligibleParkCount"],
+                ),
+                (
+                    "eligible routed green area",
+                    previous_guardrails.get(
+                        "routedEligibleGreenAreaM2"
+                    ),
+                    result["guardrails"]["routedEligibleGreenAreaM2"],
+                ),
+                (
+                    "population with access",
+                    previous_result.get("populationWithinThreshold"),
+                    result["populationWithinThreshold"],
+                ),
+                (
+                    "included green features",
+                    count_total(
+                        previous_guardrails.get("greenInputClassCounts")
+                    ),
+                    count_total(
+                        result["guardrails"]["greenInputClassCounts"]
+                    ),
+                ),
+            )
+            for label, previous_value, current_value in comparisons:
+                if (
+                    isinstance(previous_value, (int, float))
+                    and isinstance(current_value, (int, float))
+                    and previous_value > 0
+                    and current_value < previous_value * 0.7
+                ):
+                    raise RuntimeError(
+                        f"{city_id}: {label} dropped by more than 30% "
+                        f"({previous_value:,} to {current_value:,})"
+                    )
 
     def without_run_timestamps(value: dict[str, Any]) -> dict[str, Any]:
         comparable = json.loads(json.dumps(value))

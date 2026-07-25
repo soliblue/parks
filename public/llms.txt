@@ -1,6 +1,6 @@
 # Parks
 
-> Comparison of public parks and green spaces across nine cities.
+> Comparison of mapped parks and green spaces across nine cities.
 > Static, source-backed, and free of paid map APIs or Google services.
 
 Canonical URL: https://parks.soli.blue/
@@ -11,21 +11,31 @@ Copenhagen, and Cairo
 ## What the site provides
 
 - A city comparison plus maps and searchable lists for nine cities
-- A population-weighted 10-minute access estimate for Berlin and Vienna
+- Population-weighted 10-minute access estimates for all nine cities
+- Harmonized green-space share, green space per resident, and tree-cover share
 - District filters, plus positively matched amenities where source coverage exists
 - Optional browser geolocation or a map-selected origin
 - Local straight-line distance and 5/10/15-minute estimates
 - Visible data source, map attribution, methodology, and freshness
 
 The rings drawn from a selected map point are straight-line estimates. The
-Berlin and Vienna access values are separately computed pedestrian-network
-estimates. The other cities currently compare mapped park counts and area;
-missing access or amenity coverage is not evidence of absence.
+city-level access values are separately computed pedestrian-network estimates.
+Missing amenity coverage is not evidence of absence.
+
+Leaderboard inputs are distinct from the native local park layers used for map
+exploration. All nine comparison inventories use the same OpenStreetMap classes:
+leisure=park, leisure=nature_reserve, natural=wood, and landuse=forest, plus
+leisure=garden only with explicit public access and no tagged fee. Geometries
+are clipped and dissolved. Core classes count toward mapped green land
+regardless of access. For routing, fee-tagged or explicitly restricted geometry
+is removed; parks, nature reserves, and public gardens qualify by class, woods
+and forests require an explicit public-access tag, and routed components must be
+at least 0.5 ha.
 
 ## Public static data
 
 - https://parks.soli.blue/data/cities.json — city catalog and comparison totals
-- https://parks.soli.blue/data/access.json — access estimate and methodology
+- https://parks.soli.blue/data/access.json — harmonized comparison metrics and methodology
 - https://parks.soli.blue/data/berlin/ — Berlin geometry, index, summary, sources
 - https://parks.soli.blue/data/vienna/ — Vienna geometry, index, summary, sources
 - https://parks.soli.blue/data/munich/ — Munich geometry, index, summary, sources
@@ -42,10 +52,12 @@ city-prefixed OpenStreetMap identifiers for extracted PBF features.
 
 ## Sources and terms
 
-Municipal park data: Land Berlin, Stadt Wien, Ville de Paris, and Københavns
-Kommune. Extracted park data: OpenStreetMap PBF for Munich, Stuttgart, Madrid,
-Barcelona, and Cairo (ODbL).
-Berlin/Vienna access population: EC JRC 2021 100 m census grid. Walking network:
-OpenStreetMap.
+Native map data: Land Berlin, Stadt Wien, Ville de Paris, Københavns Kommune,
+and OpenStreetMap extracts.
+Comparison green space and walking network: OpenStreetMap (ODbL).
+Comparison population: EC JRC GHSL GHS-POP 2020, 100 m modeled grid.
+Tree cover: Copernicus Global Land Service CGLS-LC100 2019 fractional tree
+cover divided by land area from its matching permanent-water fraction, 100 m
+(CC BY 4.0). Its documented global tree-fraction MAE is 8.9 percentage points.
 Background maps: basemap.de, basemap.at, and OpenFreeMap.
 Project code: MIT.

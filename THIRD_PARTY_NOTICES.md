@@ -79,6 +79,19 @@ the
 [Open Data Commons Open Database License](https://www.openstreetmap.org/copyright).
 Per-refresh source details are retained in each city's `sources.json`.
 
+The city leaderboard uses a separate harmonized OpenStreetMap green-space
+inventory for all nine cities. It includes `leisure=park`,
+`leisure=nature_reserve`, `natural=wood`, and `landuse=forest`, plus
+`leisure=garden` only with explicit public access and no tagged fee. Geometries
+are clipped to each administrative boundary and dissolved before area or access
+calculations. Core classes count toward mapped green land regardless of access.
+For routing, fee-tagged or explicitly restricted geometry is removed; parks,
+nature reserves, and public gardens qualify by class, while woods and forests
+require an explicit public-access tag. Components smaller than 0.5 ha remain in
+the mapped green-land metrics but are excluded from routing.
+The native municipal and community-mapped park layers remain map-exploration
+sources and are not leaderboard inputs.
+
 ## Population grid
 
 All nine city-level access estimates use the European Commission Joint Research
@@ -88,6 +101,24 @@ It is a global modeled grid of 2020 resident population; the dataset's reuse
 notice and metadata apply. Recommended citation: Schiavina, Freire, Carioli &
 MacManus (2023), GHS-POP R2023A, European Commission JRC,
 DOI 10.2905/2FF68A52-5B5B-4A22-8F40-C41DA8332CFE.
+
+## Copernicus tree-cover fractions
+
+All nine tree-cover estimates use
+[Copernicus Global Land Service: Land Cover 100 m, Collection 3, epoch 2019](https://zenodo.org/records/3939050),
+published by the Copernicus Global Land Service and VITO. The calculation uses
+the fractional Tree Cover layer and the matching Permanent Water Cover layer for
+its land-only denominator. Both are 100 m rasters.
+
+License:
+[Creative Commons Attribution 4.0 International (`CC BY 4.0`)](https://creativecommons.org/licenses/by/4.0/).
+Recommended dataset citation: Buchhorn et al. (2020), CGLS Land Cover 100 m
+Collection 3, epoch 2019, version 3.0.1,
+DOI 10.5281/zenodo.3939050.
+
+The source validation reports a global mean absolute error of 8.9 percentage
+points for the tree-cover fraction. It is a modeled land-cover estimate rather
+than a street-tree census.
 
 ## OpenStreetMap routing data
 

@@ -88,16 +88,47 @@ verify_json() {
                 if (!ids.has(id)) process.exit(1);
               }
             } else if (kind === "access") {
+              const round = (number, precision = 1) => {
+                const factor = 10 ** precision;
+                return Math.round(number * factor) / factor;
+              };
               for (const id of [
                 "berlin", "vienna", "munich", "stuttgart", "madrid",
                 "barcelona", "cairo", "paris", "copenhagen",
               ]) {
                 const city = value.cities?.[id];
+                const green = city?.greenSpace;
+                const tree = city?.treeCover;
+                const comparisonSource = value.sources?.find(source =>
+                  source.id === `${id}-comparison-green` &&
+                  source.role === "comparison-green-space"
+                );
+                const networkSource = value.sources?.find(source =>
+                  source.id === `${id}-pedestrian-network` &&
+                  source.role === "pedestrian-network"
+                );
                 if (
                   city?.method !== "walking-network" ||
                   city?.populationYear !== 2020 ||
                   city?.thresholdMinutes !== 10 ||
-                  !(city?.sharePercent >= 0 && city.sharePercent <= 100)
+                  city?.thresholdMeters !== 805 ||
+                  !(city?.sharePercent >= 0 && city.sharePercent <= 100) ||
+                  !(green?.areaM2 > 0 && green.areaM2 <= green.cityAreaM2) ||
+                  green.sharePercent !==
+                    round((green.areaM2 / green.cityAreaM2) * 100) ||
+                  green.m2PerResident !==
+                    round(green.areaM2 / city.populationTotal) ||
+                  green.definitionVersion !== 2 ||
+                  !(tree?.areaM2 >= 0 && tree.areaM2 <= tree.landAreaM2) ||
+                  tree.sharePercent !==
+                    round((tree.areaM2 / tree.landAreaM2) * 100) ||
+                  tree.observationYear !== 2019 ||
+                  tree.resolutionMeters !== 100 ||
+                  tree.denominator !== "land-area" ||
+                  comparisonSource?.definitionVersion !== 2 ||
+                  !/^[0-9a-f]{64}$/.test(comparisonSource?.sha256 ?? "") ||
+                  comparisonSource.sha256 !== networkSource?.sha256 ||
+                  comparisonSource.url !== networkSource?.url
                 ) process.exit(1);
               }
             } else if (

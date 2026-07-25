@@ -25,6 +25,21 @@ export interface ParkAccessMetric {
   note: string
 }
 
+export interface GreenSpaceMetric {
+  areaM2: number
+  cityAreaM2: number
+  sharePercent: number
+  m2PerResident: number
+  definitionVersion: string
+}
+
+export interface TreeCoverMetric {
+  sharePercent: number
+  observationYear: number
+  resolutionMeters: number
+  denominator: string
+}
+
 export interface CityConfig {
   id: CityId
   name: string
@@ -54,6 +69,8 @@ export interface CityConfig {
   totalAreaM2: number | null
   districtCount: number | null
   access: ParkAccessMetric | null
+  greenSpace: GreenSpaceMetric | null
+  treeCover: TreeCoverMetric | null
 }
 
 const BKG_STYLE =
@@ -124,6 +141,8 @@ export const DEFAULT_CITIES: readonly CityConfig[] = [
     totalAreaM2: null,
     districtCount: null,
     access: null,
+    greenSpace: null,
+    treeCover: null,
   },
   {
     id: 'vienna',
@@ -148,6 +167,8 @@ export const DEFAULT_CITIES: readonly CityConfig[] = [
     totalAreaM2: null,
     districtCount: null,
     access: null,
+    greenSpace: null,
+    treeCover: null,
   },
   {
     id: 'munich',
@@ -172,6 +193,8 @@ export const DEFAULT_CITIES: readonly CityConfig[] = [
     totalAreaM2: null,
     districtCount: null,
     access: null,
+    greenSpace: null,
+    treeCover: null,
   },
   {
     id: 'stuttgart',
@@ -196,6 +219,8 @@ export const DEFAULT_CITIES: readonly CityConfig[] = [
     totalAreaM2: null,
     districtCount: null,
     access: null,
+    greenSpace: null,
+    treeCover: null,
   },
   {
     id: 'madrid',
@@ -220,6 +245,8 @@ export const DEFAULT_CITIES: readonly CityConfig[] = [
     totalAreaM2: null,
     districtCount: null,
     access: null,
+    greenSpace: null,
+    treeCover: null,
   },
   {
     id: 'barcelona',
@@ -244,6 +271,8 @@ export const DEFAULT_CITIES: readonly CityConfig[] = [
     totalAreaM2: null,
     districtCount: null,
     access: null,
+    greenSpace: null,
+    treeCover: null,
   },
   {
     id: 'paris',
@@ -275,6 +304,8 @@ export const DEFAULT_CITIES: readonly CityConfig[] = [
     totalAreaM2: null,
     districtCount: null,
     access: null,
+    greenSpace: null,
+    treeCover: null,
   },
   {
     id: 'copenhagen',
@@ -308,6 +339,8 @@ export const DEFAULT_CITIES: readonly CityConfig[] = [
     totalAreaM2: null,
     districtCount: null,
     access: null,
+    greenSpace: null,
+    treeCover: null,
   },
   {
     id: 'cairo',
@@ -335,6 +368,8 @@ export const DEFAULT_CITIES: readonly CityConfig[] = [
     totalAreaM2: null,
     districtCount: null,
     access: null,
+    greenSpace: null,
+    treeCover: null,
   },
 ] as const
 
@@ -426,6 +461,80 @@ const normalizeAccessMetric = (value: unknown): ParkAccessMetric | null => {
   }
 }
 
+const normalizeGreenSpaceMetric = (
+  value: unknown,
+): GreenSpaceMetric | null => {
+  const metric = asRecord(value)
+  const areaM2 = asFiniteNumber(metric.areaM2)
+  const cityAreaM2 = asFiniteNumber(metric.cityAreaM2)
+  const sharePercent = asFiniteNumber(metric.sharePercent)
+  const m2PerResident = asFiniteNumber(metric.m2PerResident)
+  const definitionVersion =
+    typeof metric.definitionVersion === 'string'
+      ? metric.definitionVersion.trim()
+      : typeof metric.definitionVersion === 'number' &&
+          Number.isInteger(metric.definitionVersion)
+        ? String(metric.definitionVersion)
+        : ''
+
+  if (
+    areaM2 === null ||
+    areaM2 < 0 ||
+    cityAreaM2 === null ||
+    cityAreaM2 <= 0 ||
+    areaM2 > cityAreaM2 ||
+    sharePercent === null ||
+    sharePercent < 0 ||
+    sharePercent > 100 ||
+    m2PerResident === null ||
+    m2PerResident < 0 ||
+    !definitionVersion
+  ) {
+    return null
+  }
+
+  return {
+    areaM2,
+    cityAreaM2,
+    sharePercent,
+    m2PerResident,
+    definitionVersion,
+  }
+}
+
+const normalizeTreeCoverMetric = (
+  value: unknown,
+): TreeCoverMetric | null => {
+  const metric = asRecord(value)
+  const sharePercent = asFiniteNumber(metric.sharePercent)
+  const observationYear = asFiniteNumber(metric.observationYear)
+  const resolutionMeters = asFiniteNumber(metric.resolutionMeters)
+  const denominator =
+    typeof metric.denominator === 'string' ? metric.denominator.trim() : ''
+
+  if (
+    sharePercent === null ||
+    sharePercent < 0 ||
+    sharePercent > 100 ||
+    observationYear === null ||
+    !Number.isInteger(observationYear) ||
+    observationYear < 1900 ||
+    observationYear > 3000 ||
+    resolutionMeters === null ||
+    resolutionMeters <= 0 ||
+    !denominator
+  ) {
+    return null
+  }
+
+  return {
+    sharePercent,
+    observationYear,
+    resolutionMeters,
+    denominator,
+  }
+}
+
 const accessByCity = (value: unknown): Record<string, unknown> => {
   const document = asRecord(value)
   const cities = asRecord(document.cities)
@@ -448,14 +557,23 @@ export const normalizeCities = (
 
   return DEFAULT_CITIES.map((fallback) => {
     const entry = manifestById.get(fallback.id) ?? {}
+    const cityMetrics = asRecord(metrics[fallback.id])
     const dataPath =
       typeof entry.dataPath === 'string'
         ? entry.dataPath.replace(/^\/+|\/+$/g, '')
         : fallback.dataPath
     const access =
-      normalizeAccessMetric(metrics[fallback.id]) ??
+      normalizeAccessMetric(cityMetrics) ??
       normalizeAccessMetric(entry.access) ??
       fallback.access
+    const greenSpace =
+      normalizeGreenSpaceMetric(cityMetrics.greenSpace) ??
+      normalizeGreenSpaceMetric(entry.greenSpace) ??
+      fallback.greenSpace
+    const treeCover =
+      normalizeTreeCoverMetric(cityMetrics.treeCover) ??
+      normalizeTreeCoverMetric(entry.treeCover) ??
+      fallback.treeCover
 
     return {
       ...fallback,
@@ -481,6 +599,8 @@ export const normalizeCities = (
       totalAreaM2: asFiniteNumber(entry.totalAreaM2),
       districtCount: asFiniteNumber(entry.districtCount),
       access,
+      greenSpace,
+      treeCover,
     }
   })
 }

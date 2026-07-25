@@ -6,7 +6,7 @@ import {
   Search,
   Trees,
 } from 'lucide-react'
-import { useEffect, useRef, type ChangeEvent } from 'react'
+import type { ChangeEvent } from 'react'
 import type { CityConfig, CityId } from '../lib/cities'
 import {
   formatHectares,
@@ -18,6 +18,7 @@ import {
   type ParkSummary,
 } from '../lib/parks'
 import { AmenityFilters } from './AmenityFilters'
+import { CityComparison } from './CityComparison'
 import { ParkResults } from './ParkResults'
 
 interface InfoPanelProps {
@@ -55,7 +56,6 @@ export function InfoPanel({
   onQueryChange,
   onParkSelect,
 }: InfoPanelProps) {
-  const cityNavigationRef = useRef<HTMLElement>(null)
   const hasSnapshot = summary.generatedAt !== null
   const areaHectares = hasSnapshot
     ? formatInteger(Math.round(summary.totalAreaM2 / 10_000))
@@ -69,16 +69,6 @@ export function InfoPanel({
     onQueryChange(event.target.value)
   }
 
-  useEffect(() => {
-    cityNavigationRef.current
-      ?.querySelector<HTMLElement>('[aria-current="page"]')
-      ?.scrollIntoView({
-        behavior: 'auto',
-        block: 'nearest',
-        inline: 'center',
-      })
-  }, [city.id])
-
   return (
     <aside
       className="information-rail"
@@ -91,65 +81,20 @@ export function InfoPanel({
         <h1>Städte vergleichen</h1>
       </header>
 
-      <nav
-        className="city-comparison"
-        ref={cityNavigationRef}
-        aria-label="Städte auswählen"
-      >
-        {cities.map((candidate) => {
-          const selected = candidate.id === city.id
-          const hectares =
-            candidate.totalAreaM2 === null
-              ? '—'
-              : formatInteger(Math.round(candidate.totalAreaM2 / 10_000))
-          return (
-            <button
-              aria-current={selected ? 'page' : undefined}
-              className="city-card"
-              data-city={candidate.id}
-              key={candidate.id}
-              onClick={() => onCitySelect(candidate.id)}
-              type="button"
-            >
-              <span className="city-card-heading">{candidate.name}</span>
-              <strong>
-                {candidate.access
-                  ? `${new Intl.NumberFormat('de-DE', {
-                      maximumFractionDigits: 1,
-                    }).format(candidate.access.sharePercent)} %`
-                  : hectares}
-              </strong>
-              <small>
-                {candidate.access
-                  ? 'mit Parkzugang in 10 Min.'
-                  : 'ha öffentliches Grün'}
-              </small>
-            </button>
-          )
-        })}
-      </nav>
+      <CityComparison
+        cities={cities}
+        city={city}
+        onCitySelect={onCitySelect}
+      />
 
-      <section className="overview" aria-labelledby="overview-heading">
-        <h2 id="overview-heading">{city.name} im Überblick</h2>
-        {city.access ? (
-          <div className="access-stat">
-            <strong>
-              {new Intl.NumberFormat('de-DE', {
-                maximumFractionDigits: 1,
-              }).format(city.access.sharePercent)}{' '}
-              %
-            </strong>
-            <span>der Bevölkerung mit Parkzugang in 10 Gehminuten</span>
-            <small>
-              Schätzung, GHSL {city.access.populationYear} ·{' '}
-              {formatInteger(city.access.populationWithinThreshold)} von{' '}
-              {formatInteger(city.access.populationTotal)} Personen
-            </small>
-          </div>
-        ) : null}
+      <section
+        className="inventory-summary"
+        aria-labelledby="inventory-heading"
+      >
+        <h2 id="inventory-heading">Lokaler Kartenbestand</h2>
         <p className="area-stat">
           <strong>{areaHectares}</strong>
-          <span> Hektar öffentliches Grün</span>
+          <span> Hektar geladene Parkfläche</span>
         </p>
         <div className="overview-facts">
           <p>
@@ -243,6 +188,11 @@ export function InfoPanel({
         </summary>
         <div>
           <p>
+            Die Vergleichswerte oben verwenden harmonisierte Definitionen. Der
+            lokale Kartenbestand für Karte, Suche und Filter stammt dagegen aus
+            dem jeweiligen Stadt-Datensatz und kann davon abweichen.
+          </p>
+          <p>
             Parkflächen
             {city.availableAmenities.length > 0 && !city.amenitySourceLabel
               ? ' und Ausstattungen'
@@ -305,11 +255,17 @@ export function InfoPanel({
           {city.districtNote ? <p>{city.districtNote}</p> : null}
           {city.access ? (
             <p>
-              Der 10-Minuten-Wert nutzt die modellierte Wohnbevölkerung aus
-              GHSL {city.access.populationYear} als Nenner. Der Zähler umfasst
-              modellierte Einwohner innerhalb von {city.access.thresholdMeters}{' '}
-              m im Fußwegenetz zu einer mindestens 0,5 ha großen, nicht als
-              privat gesperrt erfassten Parkfläche. Bevölkerungsraster:{' '}
+              Der harmonisierte 10-Minuten-Wert nutzt die modellierte
+              Wohnbevölkerung aus GHSL {city.access.populationYear} als Nenner.
+              Der Zähler umfasst modellierte Einwohner innerhalb von{' '}
+              {city.access.thresholdMeters} m im Fußwegenetz zu einer
+              mindestens 0,5 ha großen, nicht als privat gesperrt erfassten
+              Grünfläche. Das gemeinsame OSM-Flächenmodell berücksichtigt
+              Parks, Naturreservate, Waldflächen und explizit öffentliche
+              Gärten. Waldflächen zählen für den Zugang nur mit explizitem
+              öffentlichem Zugangs-Tag; als gebührenpflichtig markierte Flächen
+              sind ausgeschlossen.
+              Bevölkerungsraster:{' '}
               <a
                 href="https://data.jrc.ec.europa.eu/dataset/2ff68a52-5b5b-4a22-8f40-c41da8332cfe"
                 rel="noreferrer"
@@ -329,9 +285,28 @@ export function InfoPanel({
               Erreichbarkeitsgarantie.
             </p>
           ) : null}
+          {city.greenSpace ? (
+            <p>
+              Grünanteil und Grünfläche pro Person nutzen für alle Städte
+              dieselbe Flächendefinition ({city.greenSpace.definitionVersion})
+              und administrative Bezugsfläche. Kartierter Wald zählt hier auch
+              ohne bestätigten öffentlichen Zugang; die Werte sind weder die
+              Summe des lokalen Kartenbestands noch öffentlich zugängliche
+              Parkfläche.
+            </p>
+          ) : null}
+          {city.treeCover ? (
+            <p>
+              Die modellierte Baumbedeckung nutzt CGLS-LC100 auf der Landfläche,
+              Beobachtungsjahr {city.treeCover.observationYear}, Rasterweite{' '}
+              {formatInteger(city.treeCover.resolutionMeters)} m. Baumbedeckung
+              ist nicht automatisch öffentlich zugänglich; kleine
+              Rangunterschiede sind nicht belastbar.
+            </p>
+          ) : null}
           <p>
             {hasSnapshot
-              ? `Geladene Parkfläche: ${formatHectares(summary.totalAreaM2)} Hektar.`
+              ? `Lokaler Kartenbestand: ${formatHectares(summary.totalAreaM2)} Hektar geladene Parkfläche.`
               : 'Zurzeit ist kein konsistenter Datensatz geladen.'}
           </p>
         </div>

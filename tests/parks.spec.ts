@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
 import {
   buildWalkBands,
   findParkIdsIntersectingWalkBands,
@@ -14,10 +14,61 @@ import {
   expectSelected,
   informationRail,
   locationButton,
-  parkMap,
   searchInput,
   selectedOrigin,
 } from './locators'
+
+const COMPARISON_METRICS = [
+  'access',
+  'green-share',
+  'green-per-person',
+  'tree-cover',
+] as const
+
+const parseDisplayedNumber = (value: string | null): number => {
+  const normalized = (value ?? '')
+    .replace(/\s/g, '')
+    .replace(/\./g, '')
+    .replace(',', '.')
+    .replace(/[^\d.-]/g, '')
+  return normalized ? Number(normalized) : Number.NaN
+}
+
+const expectFiniteOverviewMetrics = async (page: Page) => {
+  const overview = page.getByTestId('comparison-metrics')
+  await expect(overview.locator('[data-metric]')).toHaveCount(4)
+
+  for (const metric of COMPARISON_METRICS) {
+    const tile = overview.locator(`[data-metric="${metric}"]`)
+    await expect(tile).toBeVisible()
+    const value = parseDisplayedNumber(
+      await tile.locator('strong').textContent(),
+    )
+    expect(Number.isFinite(value), `${metric} overview value`).toBe(true)
+  }
+}
+
+const expectCardsRankedDescending = async (page: Page) => {
+  const cards = page.locator('.city-card')
+  await expect(cards).toHaveCount(9)
+  const entries = await cards.evaluateAll((items) =>
+    items.map((item) => ({
+      rank: Number(item.getAttribute('data-rank')),
+      value: item
+        .querySelector('[data-testid="city-card-value"]')
+        ?.textContent?.trim(),
+    })),
+  )
+  const values = entries.map((entry) => parseDisplayedNumber(entry.value ?? null))
+
+  expect(entries.map((entry) => entry.rank)).toEqual([
+    1, 2, 3, 4, 5, 6, 7, 8, 9,
+  ])
+  expect(values.every(Number.isFinite)).toBe(true)
+  for (let index = 1; index < values.length; index += 1) {
+    expect(values[index - 1]).toBeGreaterThanOrEqual(values[index])
+  }
+}
 
 const parkAtBandEdge = (
   id: string,
@@ -148,9 +199,29 @@ test('initial load renders the Berlin overview', async ({ page }) => {
   await expect(page.getByText('Berlin im Überblick', { exact: true })).toBeVisible()
   await expect(page.getByText('Parks in der Nähe', { exact: true })).toBeVisible()
   await expect(page.getByText(/Daten:\s*Land Berlin/i)).toBeVisible()
-  await expect(page.locator('.access-stat')).toContainText(
-    /der Bevölkerung mit Parkzugang in 10 Gehminuten/,
+  const switcher = page.getByTestId('metric-switcher')
+  await expect(switcher.locator('button')).toHaveCount(4)
+  for (const metric of COMPARISON_METRICS) {
+    await expect(
+      switcher.locator(`[data-comparison-metric="${metric}"]`),
+    ).toBeVisible()
+  }
+  await expect(
+    switcher.locator('[data-comparison-metric="access"]'),
+  ).toHaveAttribute('aria-pressed', 'true')
+  await expect(
+    switcher.locator('[data-comparison-metric="green-share"]'),
+  ).toHaveAttribute('aria-pressed', 'false')
+  await expect(page.locator('[data-metric="access"]')).toContainText(
+    /Zugang zu Grünflächen in 10 Gehminuten/,
   )
+  await expectFiniteOverviewMetrics(page)
+  await expectCardsRankedDescending(page)
+
+  const disclosure = page.locator('.source-disclosure')
+  await disclosure.locator('summary').click()
+  await expect(disclosure).toContainText(/harmonisierte Definitionen/i)
+  await expect(disclosure).toContainText(/gemeinsame OSM-Flächenmodell/i)
 })
 
 test('loads Vienna directly and keeps the selected city in the URL', async ({
@@ -166,9 +237,10 @@ test('loads Vienna directly and keeps the selected city in the URL', async ({
   )
   await expect(page).toHaveURL(/(?:\?|&)city=vienna(?:&|$)/)
   await expect(page.getByText(/Daten:\s*Stadt Wien/i)).toBeVisible()
-  await expect(page.locator('.access-stat')).toContainText(
-    /der Bevölkerung mit Parkzugang in 10 Gehminuten/,
+  await expect(page.locator('[data-metric="access"]')).toContainText(
+    /Zugang zu Grünflächen in 10 Gehminuten/,
   )
+  await expectFiniteOverviewMetrics(page)
   await expect(page.getByTestId('park-map')).toHaveAttribute(
     'aria-label',
     'Karte der Parks in Wien',
@@ -208,7 +280,7 @@ test('loads every added city from the comparison rail', async ({ page }) => {
     await expect(page).toHaveURL(
       new RegExp(`(?:\\?|&)city=${cityId}(?:&|$)`),
     )
-    await expect(page.locator('.access-stat')).toContainText('%')
+    await expectFiniteOverviewMetrics(page)
     await expect(page.locator('.amenity-button')).toHaveCount(4)
     for (const amenity of [
       'Spielplatz',
@@ -232,12 +304,68 @@ test('loads every added city from the comparison rail', async ({ page }) => {
   await expect(page.locator('.amenity-fieldset')).toBeVisible()
 })
 
+test('comparison metrics re-rank cities without changing the selected city', async ({
+  page,
+}) => {
+  const parkFiles: string[] = []
+  page.on('request', (request) => {
+    if (/\/data\/[^/]+\/parks\.geojson/.test(request.url())) {
+      parkFiles.push(request.url())
+    }
+  })
+
+  await page.goto('/?city=vienna')
+  await expect(page.getByText('Wien im Überblick', { exact: true })).toBeVisible()
+  const selectedUrl = page.url()
+  await expectCardsRankedDescending(page)
+  const orders: string[][] = [
+    await page
+      .locator('.city-card')
+      .evaluateAll((cards) =>
+        cards.map((card) => card.getAttribute('data-city') ?? ''),
+      ),
+  ]
+
+  for (const metric of COMPARISON_METRICS.slice(1)) {
+    const control = page.locator(
+      `[data-comparison-metric="${metric}"]`,
+    )
+    await control.click()
+    await expect(control).toHaveAttribute('aria-pressed', 'true')
+    await expectCardsRankedDescending(page)
+    await expectFiniteOverviewMetrics(page)
+    orders.push(
+      await page
+        .locator('.city-card')
+        .evaluateAll((cards) =>
+          cards.map((card) => card.getAttribute('data-city') ?? ''),
+        ),
+    )
+    await expect(
+      page.locator('.city-card[data-city="vienna"]'),
+    ).toHaveAttribute('aria-current', 'page')
+    await expect(page).toHaveURL(selectedUrl)
+  }
+
+  expect(new Set(orders.map((order) => order.join(','))).size).toBeGreaterThan(1)
+  await expect
+    .poll(
+      () =>
+        parkFiles.filter((url) => url.includes('/data/vienna/parks.geojson'))
+          .length,
+    )
+    .toBe(1)
+  expect(
+    parkFiles.every((url) => url.includes('/data/vienna/parks.geojson')),
+  ).toBe(true)
+})
+
 test('a Munich map click highlights parks after selecting a search result', async ({
   page,
 }) => {
   await page.goto('/?city=munich')
 
-  const map = parkMap(page)
+  const map = page.getByTestId('park-map')
   const canvas = page.locator('.maplibregl-canvas')
   await expect(canvas).toBeVisible()
   await expect(map).toHaveAttribute('data-map-ready', 'true')
@@ -288,7 +416,7 @@ test('desktop shows an information rail beside the map', async ({ page }) => {
   await page.goto('/')
 
   const rail = informationRail(page)
-  const map = parkMap(page)
+  const map = page.getByTestId('park-map')
   await expect(rail).toBeVisible()
   await expect(map).toBeVisible()
   await expect(

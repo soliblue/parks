@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -52,10 +51,6 @@ async function readJson(path) {
   } catch (error) {
     throw new Error(`${path} is not valid JSON: ${error}`);
   }
-}
-
-async function fileSha256(path) {
-  return createHash("sha256").update(await readFile(path)).digest("hex");
 }
 
 function checkSchemaVersion(document, label) {
@@ -583,7 +578,7 @@ function checkManifestEntry(entry, city, summary) {
   );
 }
 
-async function checkAccess(checked) {
+async function checkAccess() {
   const path = join(DATA_DIRECTORY, "access.json");
   const access = await readJson(path);
   checkSchemaVersion(access, "access.json");
@@ -597,7 +592,7 @@ async function checkAccess(checked) {
   );
   invariant(
     Array.isArray(access.sources) &&
-      access.sources.length >= CITY_CONFIG.length * 3 + 7,
+      access.sources.length >= CITY_CONFIG.length * 3 + 9,
     "access.json: source provenance missing",
   );
   const populationSources = access.sources.filter(
@@ -650,43 +645,140 @@ async function checkAccess(checked) {
         ),
       `access.json/${city.id}: percentage does not match population totals`,
     );
+
+    const greenSpace = result.greenSpace;
     invariant(
-      result.guardrails?.populationGridResolutionMeters === 100 &&
-        result.guardrails?.populationModel?.includes("GHSL") &&
-        Array.isArray(result.guardrails?.populationTileIds) &&
-        result.guardrails.populationTileIds.length > 0 &&
-        /^EPSG:326\d{2}$/.test(result.guardrails?.metricProjection ?? "") &&
-        result.guardrails?.minimumEligibleParkAreaHa === 0.5 &&
-        result.guardrails?.parkInputFeatureCount ===
-          checked[city.id].summary.parkCount &&
-        result.guardrails?.eligibleParkCount > 0 &&
-        result.guardrails?.parksWithoutNetworkAccess >= 0 &&
-        result.guardrails?.populationBoundaryUncoveredM2 === 0 &&
-        Number.isInteger(result.guardrails?.populationBeyondSnapLimit) &&
-        result.guardrails.populationBeyondSnapLimit >= 0 &&
-        result.guardrails.populationBeyondSnapLimit / result.populationTotal <=
+      Number.isInteger(greenSpace?.areaM2) &&
+        greenSpace.areaM2 > 0 &&
+        Number.isInteger(greenSpace.cityAreaM2) &&
+        greenSpace.cityAreaM2 >= greenSpace.areaM2 &&
+        greenSpace.sharePercent ===
+          round((greenSpace.areaM2 / greenSpace.cityAreaM2) * 100, 1) &&
+        greenSpace.m2PerResident ===
+          round(greenSpace.areaM2 / result.populationTotal, 1) &&
+        greenSpace.definitionVersion === 2,
+      `access.json/${city.id}: harmonized green-space metric is invalid`,
+    );
+
+    const treeCover = result.treeCover;
+    invariant(
+      Number.isInteger(treeCover?.areaM2) &&
+        treeCover.areaM2 >= 0 &&
+        Number.isInteger(treeCover.landAreaM2) &&
+        treeCover.landAreaM2 > 0 &&
+        treeCover.areaM2 <= treeCover.landAreaM2 &&
+        treeCover.sharePercent ===
+          round((treeCover.areaM2 / treeCover.landAreaM2) * 100, 1) &&
+        treeCover.observationYear === 2019 &&
+        treeCover.resolutionMeters === 100 &&
+        treeCover.denominator === "land-area",
+      `access.json/${city.id}: harmonized tree-cover metric is invalid`,
+    );
+
+    const guardrails = result.guardrails;
+    const classCounts = guardrails?.greenInputClassCounts;
+    const allowedClasses = new Set([
+      "leisure=park",
+      "leisure=nature_reserve",
+      "natural=wood",
+      "landuse=forest",
+      "leisure=garden",
+    ]);
+    const classEntries =
+      classCounts && typeof classCounts === "object"
+        ? Object.entries(classCounts)
+        : [];
+    const includedFeatureCount = classEntries.reduce(
+      (total, [, count]) =>
+        total + (Number.isInteger(count) && count >= 0 ? count : NaN),
+      0,
+    );
+    const accessClassEntries =
+      guardrails?.greenAccessInputClassCounts &&
+      typeof guardrails.greenAccessInputClassCounts === "object"
+        ? Object.entries(guardrails.greenAccessInputClassCounts)
+        : [];
+    const accessFeatureCount = accessClassEntries.reduce(
+      (total, [, count]) =>
+        total + (Number.isInteger(count) && count >= 0 ? count : NaN),
+      0,
+    );
+    invariant(
+      guardrails?.populationGridResolutionMeters === 100 &&
+        guardrails?.populationModel?.includes("GHSL") &&
+        Array.isArray(guardrails?.populationTileIds) &&
+        guardrails.populationTileIds.length > 0 &&
+        /^EPSG:326\d{2}$/.test(guardrails?.metricProjection ?? "") &&
+        guardrails?.minimumEligibleParkAreaHa === 0.5 &&
+        Number.isInteger(guardrails.greenInputFeatureCount) &&
+        Number.isInteger(guardrails.greenAccessInputFeatureCount) &&
+        Number.isInteger(guardrails.greenDissolvedComponentCount) &&
+        Number.isInteger(guardrails.greenComponentsBelowMinimumArea) &&
+        Number.isInteger(guardrails.greenFeaturesWithInvalidOrEmptyGeometry) &&
+        guardrails.greenFeaturesWithInvalidOrEmptyGeometry >= 0 &&
+        Number.isInteger(guardrails.greenFeaturesExcludedByAccessRule) &&
+        guardrails.greenFeaturesExcludedByAccessRule >= 0 &&
+        Number.isInteger(
+          guardrails.greenFeaturesWithoutPublicAccessEvidence,
+        ) &&
+        guardrails.greenFeaturesWithoutPublicAccessEvidence >= 0 &&
+        classEntries.length > 0 &&
+        classEntries.every(([name]) => allowedClasses.has(name)) &&
+        accessClassEntries.length > 0 &&
+        accessClassEntries.every(([name]) => allowedClasses.has(name)) &&
+        Number.isFinite(includedFeatureCount) &&
+        includedFeatureCount > 0 &&
+        Number.isFinite(accessFeatureCount) &&
+        accessFeatureCount > 0 &&
+        guardrails.greenAccessInputFeatureCount === accessFeatureCount &&
+        accessFeatureCount <= includedFeatureCount &&
+        Number.isInteger(guardrails.routedEligibleGreenAreaM2) &&
+        guardrails.routedEligibleGreenAreaM2 > 0 &&
+        guardrails.routedEligibleGreenAreaM2 <= greenSpace.areaM2 &&
+        guardrails.greenInputFeatureCount >=
+          includedFeatureCount +
+            guardrails.greenFeaturesWithInvalidOrEmptyGeometry &&
+        guardrails.greenInputFeatureCount >=
+          guardrails.greenFeaturesExcludedByAccessRule &&
+        guardrails.greenDissolvedComponentCount > 0 &&
+        guardrails.greenComponentsBelowMinimumArea >= 0 &&
+        guardrails.eligibleParkCount > 0 &&
+        guardrails.greenDissolvedComponentCount ===
+          guardrails.eligibleParkCount +
+            guardrails.greenComponentsBelowMinimumArea &&
+        guardrails.parksWithoutNetworkAccess >= 0 &&
+        guardrails.populationBoundaryUncoveredM2 === 0 &&
+        Number.isInteger(guardrails.populationBeyondSnapLimit) &&
+        guardrails.populationBeyondSnapLimit >= 0 &&
+        guardrails.populationBeyondSnapLimit / result.populationTotal <=
           0.05 &&
-        result.guardrails.parksWithoutNetworkAccess /
-          result.guardrails.eligibleParkCount <=
+        guardrails.parksWithoutNetworkAccess /
+          guardrails.eligibleParkCount <=
           0.1 &&
-        !Object.hasOwn(result.guardrails, "networkSourceWasCached"),
+        !Object.hasOwn(guardrails, "networkSourceWasCached"),
       `access.json/${city.id}: guardrails are incomplete or operationally unstable`,
     );
 
-    const parkSource = access.sources.find(
-      (source) => source.id === `${city.id}-parks`,
+    const comparisonSource = access.sources.find(
+      (source) =>
+        source.id === `${city.id}-comparison-green` &&
+        source.role === "comparison-green-space",
     );
     const networkSource = access.sources.find(
-      (source) => source.id === `${city.id}-pedestrian-network`,
+      (source) =>
+        source.id === `${city.id}-pedestrian-network` &&
+        source.role === "pedestrian-network",
     );
     invariant(
-      parkSource?.sha256 ===
-        (await fileSha256(cityPaths(city.id).parks)),
-      `access.json/${city.id}: park snapshot hash is stale`,
-    );
-    invariant(
-      /^[0-9a-f]{64}$/.test(networkSource?.sha256 ?? ""),
-      `access.json/${city.id}: OSM network source missing`,
+      comparisonSource?.city === city.id &&
+        comparisonSource.definitionVersion === 2 &&
+        Array.isArray(comparisonSource.includedClasses) &&
+        comparisonSource.includedClasses.length === 5 &&
+        /^[0-9a-f]{64}$/.test(comparisonSource.sha256 ?? "") &&
+        networkSource?.city === city.id &&
+        comparisonSource.sha256 === networkSource.sha256 &&
+        comparisonSource.url === networkSource.url,
+      `access.json/${city.id}: harmonized OSM source provenance mismatch`,
     );
   }
 }
@@ -763,7 +855,7 @@ async function main() {
         .at(-1),
     "cities.json: generatedAt must be the latest city snapshot",
   );
-  await checkAccess(checked);
+  await checkAccess();
   await checkHostingConfig();
   await checkBrandRemoval();
 
