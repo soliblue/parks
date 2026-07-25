@@ -20,6 +20,7 @@
   "dependencies": {
     "@fontsource/fraunces": "^5.2.8",
     "@fontsource/lora": "^5.2.8",
+    "@turf/boolean-intersects": "^7.2.0",
     "@turf/boolean-point-in-polygon": "^7.2.0",
     "@turf/buffer": "^7.2.0",
     "@turf/centroid": "^7.2.0",

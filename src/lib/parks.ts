@@ -12,6 +12,15 @@ import type {
 
 export type Coordinate = [number, number]
 
+export const WALK_BANDS = [
+  { minutes: 5, distanceKm: 0.35 },
+  { minutes: 10, distanceKm: 0.7 },
+  { minutes: 15, distanceKm: 1.05 },
+] as const
+
+export type WalkBandMinutes = (typeof WALK_BANDS)[number]['minutes']
+export type ParkIdsByWalkBand = Record<WalkBandMinutes, string[]>
+
 export type AmenityKey =
   | 'playground'
   | 'drinkingFountain'
@@ -406,17 +415,18 @@ export const normalizeParkData = (
     const park = normalizePark(feature.properties, feature)
     if (!park) continue
     const indexed = parkById.get(park.id)
+    const preciseBounds = boundsFromGeometry(feature.geometry, park.centroid)
     parkById.set(
       park.id,
       indexed
         ? {
             ...park,
             ...indexed,
-            bounds: park.bounds,
+            bounds: preciseBounds,
             centroid: indexed.centroid ?? park.centroid,
             amenities: indexed.amenities,
           }
-        : park,
+        : { ...park, bounds: preciseBounds },
     )
   }
 

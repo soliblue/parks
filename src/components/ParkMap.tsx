@@ -1,5 +1,3 @@
-import buffer from '@turf/buffer'
-import { point } from '@turf/helpers'
 import { ChevronLeft, Crosshair, Minus, Plus } from 'lucide-react'
 import {
   GeoJSONSource,
@@ -9,14 +7,48 @@ import {
   type MapMouseEvent,
   type StyleSpecification,
 } from 'maplibre-gl'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
-import type { Feature, FeatureCollection, Polygon } from 'geojson'
-import type { Coordinate, Park, ParksGeoJson } from '../lib/parks'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import {
+  WALK_BANDS,
+  type Coordinate,
+  type Park,
+  type ParkIdsByWalkBand,
+  type ParksGeoJson,
+} from '../lib/parks'
+import {
+  buildWalkBands,
+  findParkIdsIntersectingWalkBands,
+  type WalkBandsGeoJson,
+} from '../lib/walk-bands'
 
-const BAND_KILOMETERS = [
-  { minutes: 15, distance: 1.05 },
-  { minutes: 10, distance: 0.7 },
-  { minutes: 5, distance: 0.35 },
+const MAP_WALK_BANDS = [...WALK_BANDS].reverse()
+const EMPTY_PARK_IDS_BY_WALK_BAND: ParkIdsByWalkBand = {
+  5: [],
+  10: [],
+  15: [],
+}
+const PARK_HIGHLIGHT_STYLES = [
+  {
+    minutes: 15,
+    color: '#69d184',
+    fillOpacity: 0.22,
+    lineOpacity: 0.46,
+    lineWidth: 1,
+  },
+  {
+    minutes: 10,
+    color: '#34c759',
+    fillOpacity: 0.18,
+    lineOpacity: 0.62,
+    lineWidth: 1.25,
+  },
+  {
+    minutes: 5,
+    color: '#168f3b',
+    fillOpacity: 0.18,
+    lineOpacity: 0.82,
+    lineWidth: 1.6,
+  },
 ] as const
 
 const softenOfficialBasemap = (map: MapLibreMap) => {
@@ -145,35 +177,32 @@ interface ParkMapProps {
   onLocationMessage: (message: string | null) => void
 }
 
-const buildBands = (
-  origin: Coordinate,
-): FeatureCollection<Polygon, { minutes: number }> => {
-  const features = BAND_KILOMETERS.flatMap(({ minutes, distance }) => {
-    const polygon = buffer(point(origin), distance, {
-      units: 'kilometers',
-      steps: 64,
-    })
-    if (!polygon) return []
-    return [
-      {
-        ...polygon,
-        properties: { minutes },
-      } as Feature<Polygon, { minutes: number }>,
-    ]
-  })
-  return { type: 'FeatureCollection', features }
+const parkIdsFilter = (ids: readonly string[]): FilterSpecification =>
+  ids.length > 0
+    ? ['in', ['get', 'id'], ['literal', ids]]
+    : ['==', ['get', 'id'], '__none__']
+
+const syncHighlightedParks = (
+  map: MapLibreMap,
+  highlightedParkIds: ParkIdsByWalkBand,
+) => {
+  for (const { minutes } of PARK_HIGHLIGHT_STYLES) {
+    const filter = parkIdsFilter(highlightedParkIds[minutes])
+    map.setFilter(`park-highlight-${minutes}`, filter)
+    map.setFilter(`park-highlight-${minutes}-outline`, filter)
+  }
 }
 
 const syncMapData = (
   map: MapLibreMap,
   geojson: ParksGeoJson,
   origin: Coordinate | null,
+  highlightedParkIds: ParkIdsByWalkBand,
+  updateParkSource: boolean,
 ) => {
-  if (!map.isStyleLoaded()) return
-
   const parkSource = map.getSource('parks') as GeoJSONSource | undefined
   if (parkSource) {
-    parkSource.setData(geojson)
+    if (updateParkSource) parkSource.setData(geojson)
   } else {
     map.addSource('parks', { type: 'geojson', data: geojson })
     map.addLayer({
@@ -195,6 +224,36 @@ const syncMapData = (
         'line-width': 0.7,
       },
     })
+    for (const {
+      minutes,
+      color,
+      fillOpacity,
+      lineOpacity,
+      lineWidth,
+    } of PARK_HIGHLIGHT_STYLES) {
+      const filter = parkIdsFilter(highlightedParkIds[minutes])
+      map.addLayer({
+        id: `park-highlight-${minutes}`,
+        type: 'fill',
+        source: 'parks',
+        filter,
+        paint: {
+          'fill-color': color,
+          'fill-opacity': fillOpacity,
+        },
+      })
+      map.addLayer({
+        id: `park-highlight-${minutes}-outline`,
+        type: 'line',
+        source: 'parks',
+        filter,
+        paint: {
+          'line-color': color,
+          'line-opacity': lineOpacity,
+          'line-width': lineWidth,
+        },
+      })
+    }
     map.addLayer({
       id: 'park-selected',
       type: 'line',
@@ -206,9 +265,10 @@ const syncMapData = (
       },
     })
   }
+  syncHighlightedParks(map, highlightedParkIds)
 
-  const bandData: FeatureCollection<Polygon, { minutes: number }> = origin
-    ? buildBands(origin)
+  const bandData: WalkBandsGeoJson = origin
+    ? buildWalkBands(origin)
     : { type: 'FeatureCollection', features: [] }
   const bandSource = map.getSource('distance-bands') as
     | GeoJSONSource
@@ -251,6 +311,9 @@ const syncMapData = (
       'park-fill',
     )
   }
+
+  const mapShell = map.getContainer().parentElement
+  if (mapShell) mapShell.dataset.renderedOrigin = origin?.join(',') ?? ''
 }
 
 export function ParkMap({
@@ -273,9 +336,9 @@ export function ParkMap({
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
   const readyMapRef = useRef<MapLibreMap | null>(null)
+  const syncedGeojsonRef = useRef<ParksGeoJson | null>(null)
   const markerRef = useRef<Marker | null>(null)
   const bandLabelMarkersRef = useRef<Marker[]>([])
-  const latestDataRef = useRef({ geojson, origin })
   const handlersRef = useRef<HandlerRefs>({
     onOriginChange,
     onParkSelect,
@@ -284,8 +347,20 @@ export function ParkMap({
   const [mapReady, setMapReady] = useState(false)
   const [mapError, setMapError] = useState<string | null>(null)
   const [centerLongitude, centerLatitude] = center
+  const visibleParks = useMemo(() => {
+    const visibleIds = new Set(visibleParkIds)
+    return parks.filter((park) => visibleIds.has(park.id))
+  }, [parks, visibleParkIds])
+  const highlightedParkIds = useMemo<ParkIdsByWalkBand>(
+    () =>
+      origin
+        ? findParkIdsIntersectingWalkBands(visibleParks, origin)
+        : EMPTY_PARK_IDS_BY_WALK_BAND,
+    [origin, visibleParks],
+  )
+  const latestDataRef = useRef({ geojson, highlightedParkIds, origin })
 
-  latestDataRef.current = { geojson, origin }
+  latestDataRef.current = { geojson, highlightedParkIds, origin }
   handlersRef.current = {
     onOriginChange,
     onParkSelect,
@@ -317,7 +392,10 @@ export function ParkMap({
         map,
         latestDataRef.current.geojson,
         latestDataRef.current.origin,
+        latestDataRef.current.highlightedParkIds,
+        true,
       )
+      syncedGeojsonRef.current = latestDataRef.current.geojson
       readyMapRef.current = map
       setMapReady(true)
       setMapError(null)
@@ -364,14 +442,22 @@ export function ParkMap({
       map.remove()
       if (mapRef.current === map) mapRef.current = null
       if (readyMapRef.current === map) readyMapRef.current = null
+      syncedGeojsonRef.current = null
     }
   }, [basemapStyle, centerLatitude, centerLongitude, cityName, zoom])
 
   useEffect(() => {
     const map = mapRef.current
     if (!map || readyMapRef.current !== map) return
-    syncMapData(map, geojson, origin)
-  }, [geojson, mapReady, origin])
+    syncMapData(
+      map,
+      geojson,
+      origin,
+      highlightedParkIds,
+      syncedGeojsonRef.current !== geojson,
+    )
+    syncedGeojsonRef.current = geojson
+  }, [geojson, highlightedParkIds, mapReady, origin])
 
   useEffect(() => {
     const map = mapRef.current
@@ -464,13 +550,16 @@ export function ParkMap({
       })
     }
 
-    bandLabelMarkersRef.current = BAND_KILOMETERS.map(
-      ({ minutes, distance }) => {
+    bandLabelMarkersRef.current = MAP_WALK_BANDS.map(
+      ({ minutes, distanceKm }) => {
         const element = document.createElement('span')
         element.className = 'distance-band-label'
         element.textContent = `${minutes} min`
         return new Marker({ element, anchor: 'bottom' })
-          .setLngLat([origin[0] - distance / 150, origin[1] + distance / 111])
+          .setLngLat([
+            origin[0] - distanceKm / 150,
+            origin[1] + distanceKm / 111,
+          ])
           .addTo(map)
       },
     )
@@ -510,6 +599,11 @@ export function ParkMap({
     <section
       className="map-shell"
       data-testid="park-map"
+      data-highlighted-5-min={highlightedParkIds[5].length}
+      data-highlighted-10-min={highlightedParkIds[10].length}
+      data-highlighted-15-min={highlightedParkIds[15].length}
+      data-highlighted-parks={highlightedParkIds[15].length}
+      data-origin={origin?.join(',') ?? ''}
       aria-label={`Karte der Parks in ${cityName}`}
     >
       <div className="map-canvas" ref={containerRef} />

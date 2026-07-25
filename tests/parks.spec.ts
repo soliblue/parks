@@ -1,5 +1,14 @@
 import { expect, test } from '@playwright/test'
 import {
+  buildWalkBands,
+  findParkIdsIntersectingWalkBands,
+} from '../src/lib/walk-bands'
+import {
+  normalizeParkData,
+  type Park,
+  type WalkBandMinutes,
+} from '../src/lib/parks'
+import {
   amenityFilter,
   appHeading,
   expectSelected,
@@ -9,6 +18,126 @@ import {
   searchInput,
   selectedOrigin,
 } from './locators'
+
+const parkAtBandEdge = (
+  id: string,
+  minutes: WalkBandMinutes,
+  origin: [number, number],
+): Park => {
+  const band = buildWalkBands(origin).features.find(
+    (feature) => feature.properties.minutes === minutes,
+  )
+  if (!band) throw new Error(`Missing ${minutes}-minute band`)
+  const edge = band.geometry.coordinates[0].reduce((eastmost, coordinate) =>
+    coordinate[0] > eastmost[0] ? coordinate : eastmost,
+  )
+  const epsilon = 0.00001
+  const bounds: [number, number, number, number] = [
+    edge[0] - epsilon,
+    edge[1] - epsilon,
+    edge[0] + epsilon,
+    edge[1] + epsilon,
+  ]
+
+  return {
+    id,
+    name: id,
+    nameAddon: '',
+    district: '',
+    locality: '',
+    type: '',
+    areaM2: 1,
+    centroid: [edge[0], edge[1]],
+    bounds,
+    dedicated: false,
+    amenities: {
+      playground: false,
+      drinkingFountain: false,
+      toilet: false,
+      dogRun: false,
+    },
+    geometry: {
+      type: 'Polygon',
+      coordinates: [
+        [
+          [bounds[0], bounds[1]],
+          [bounds[2], bounds[1]],
+          [bounds[2], bounds[3]],
+          [bounds[0], bounds[3]],
+          [bounds[0], bounds[1]],
+        ],
+      ],
+    },
+  }
+}
+
+test('walk bands highlight parks touched at each exact circle edge', () => {
+  const origin: [number, number] = [13.405, 52.52]
+  const parks = [
+    parkAtBandEdge('five', 5, origin),
+    parkAtBandEdge('ten', 10, origin),
+    parkAtBandEdge('fifteen', 15, origin),
+  ]
+  const outerBand = buildWalkBands(origin).features.find(
+    (feature) => feature.properties.minutes === 15,
+  )
+  if (!outerBand) throw new Error('Missing outer band')
+  const outerEast = Math.max(
+    ...outerBand.geometry.coordinates[0].map(([longitude]) => longitude),
+  )
+  const outside = parkAtBandEdge('outside', 15, origin)
+  const shift = outerEast - outside.bounds[0] + 0.00001
+  outside.bounds = outside.bounds.map((value, index) =>
+    index % 2 === 0 ? value + shift : value,
+  ) as Park['bounds']
+  if (outside.geometry?.type === 'Polygon') {
+    outside.geometry.coordinates = outside.geometry.coordinates.map((ring) =>
+      ring.map(([longitude, latitude]) => [longitude + shift, latitude]),
+    )
+  }
+
+  const ids = findParkIdsIntersectingWalkBands([...parks, outside], origin)
+
+  expect(ids[5]).toEqual(['five'])
+  expect(ids[10]).toEqual(['five', 'ten'])
+  expect(ids[15]).toEqual(['five', 'ten', 'fifteen'])
+})
+
+test('park bounds come from exact geometry rather than rounded metadata', () => {
+  const geometry = {
+    type: 'Polygon' as const,
+    coordinates: [
+      [
+        [13.400004, 52.500004],
+        [13.410006, 52.500004],
+        [13.410006, 52.510006],
+        [13.400004, 52.510006],
+        [13.400004, 52.500004],
+      ],
+    ],
+  }
+  const data = normalizeParkData(
+    { items: [{ id: 'precise', bounds: [13.4, 52.5, 13.41, 52.51] }] },
+    {
+      type: 'FeatureCollection',
+      features: [
+        {
+          type: 'Feature',
+          properties: {
+            id: 'precise',
+            bounds: [13.4, 52.5, 13.41, 52.51],
+          },
+          geometry,
+        },
+      ],
+    },
+    {},
+  )
+
+  expect(data.parks[0].bounds).toEqual([
+    13.400004, 52.500004, 13.410006, 52.510006,
+  ])
+})
 
 test('initial load renders the Berlin overview', async ({ page }) => {
   const response = await page.goto('/')
@@ -128,9 +257,40 @@ test('a map click always chooses an origin', async ({ page }) => {
   await page.goto('/')
 
   const canvas = page.locator('.maplibregl-canvas')
+  const map = page.getByTestId('park-map')
   await expect(canvas).toBeVisible()
   await canvas.click({ position: { x: 500, y: 400 } })
   await expect(selectedOrigin(page)).toBeVisible()
+  await expect
+    .poll(async () => Number(await map.getAttribute('data-highlighted-parks')))
+    .toBeGreaterThan(0)
+
+  const [fiveMinutes, tenMinutes, fifteenMinutes] = await Promise.all([
+    map.getAttribute('data-highlighted-5-min'),
+    map.getAttribute('data-highlighted-10-min'),
+    map.getAttribute('data-highlighted-15-min'),
+  ]).then((values) => values.map(Number))
+  expect(fiveMinutes).toBeLessThanOrEqual(tenMinutes)
+  expect(tenMinutes).toBeLessThanOrEqual(fifteenMinutes)
+
+  const firstOrigin = await map.getAttribute('data-origin')
+  expect(firstOrigin).toBeTruthy()
+  await canvas.click({ position: { x: 620, y: 320 } })
+  await expect
+    .poll(async () => {
+      const currentOrigin = await map.getAttribute('data-origin')
+      return currentOrigin && currentOrigin !== firstOrigin
+    })
+    .toBeTruthy()
+  await expect
+    .poll(async () => {
+      const [currentOrigin, renderedOrigin] = await Promise.all([
+        map.getAttribute('data-origin'),
+        map.getAttribute('data-rendered-origin'),
+      ])
+      return renderedOrigin === currentOrigin
+    })
+    .toBe(true)
 })
 
 test('a shared park selection remains visible without an origin', async ({
